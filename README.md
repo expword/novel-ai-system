@@ -22,53 +22,30 @@
 
 ## 快速开始
 
-### 1. 环境
-
 ```bash
-python -m venv venv
-venv\Scripts\activate          # Windows
-# 或 source venv/bin/activate  # macOS / Linux
+# 1. 装依赖（要求 Python 3.10+）
 pip install -r requirements.txt
-```
 
-要求 Python 3.10+。
-
-### 2. 配置 LLM
-
-```bash
+# 2. 配 LLM（拷模板填 API key；至少配一个 usage=["main"] 的主模型）
 cp user_models.example.json user_models.json
-# 编辑 user_models.json 填入真实 API key
+
+# 3. 启动
+python run_web.py            # Web UI（推荐）→ http://127.0.0.1:5000
+# 或
+python main.py               # 纯 CLI
 ```
 
-至少配一个 `usage: ["main"]` 的主模型。可选配 `reviewer` / `fallback` / 叙事内 AI（如豆包）。
+浏览器打开后：**新建小说 → 选 stepwise / auto 模式 → 点 ▶ 启动 → 边跑边看左侧菜单各面板产物**。
 
-### 3. 启动 Web UI（推荐）
+---
 
-```bash
-python run_web.py
-# 默认 http://127.0.0.1:5000
-```
+## 📚 文档导航
 
-浏览器打开后：
-1. **新建小说** —— 两种入口
-   - 选择题向导（5 步选题材/路子/主角/基调/平台）—— 小白友好
-   - 高级模式（直接粘 200-500 字作者意图）
-2. **选模式**：stepwise（每阶段组暂停审）/ auto（一路跑通）
-3. **点 ▶ 启动** —— 后台跑 30 phase 规划期 → 卷级 → 章节
-4. **左侧菜单** 按阶段组分类查看所有产物：意图/卖点/世界观/人物/关系网/爽点/伏笔/反转/章节正文/审计 等
-5. **重写章节** / **章节对话编辑器** / **版本回滚** / **重生 phase** / **LLM 模型管理** 全部 GUI 操作
-
-详细操作手册（5000+ 字，含每个面板说明、所有按钮、常见问题）见 [USAGE_WEB.md](./USAGE_WEB.md)。
-
-### 4. 或者纯 CLI
-
-```bash
-# 跑完整规划 + 章节写作
-python main.py
-# 通过环境变量指定项目
-$env:XIAOSHUO_PROJECT_ID="my_novel"     # PowerShell
-python main.py
-```
+| 看什么 | 文档 |
+|---|---|
+| 第一次入门（环境隔离 / LLM 路由配置 / 第一次跑通建议 / 常见坑） | [GETTING_STARTED.md](./GETTING_STARTED.md) |
+| Web UI 全部按钮/面板/操作流程 | [USAGE_WEB.md](./USAGE_WEB.md) |
+| 架构详解（三层架构 / 60 个 agent 分类 / 30 phase 数据流 / 关键设计决策） | [ARCHITECTURE.md](./ARCHITECTURE.md) |
 
 ---
 
