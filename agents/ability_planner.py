@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from json_utils import request_json
-from state import NovelState
+from utils.json_utils import request_json
+from persistence.state import NovelState
 
 
 @dataclass

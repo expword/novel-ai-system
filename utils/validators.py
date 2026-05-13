@@ -20,7 +20,7 @@
 from __future__ import annotations
 from typing import Callable, Optional
 
-from state import NovelState
+from persistence.state import NovelState
 
 
 # ═══════════════════════════════════════════════════════
@@ -87,7 +87,7 @@ def faction_has_hidden_and_neutral(state: NovelState) -> tuple[bool, str]:
 # ═══════════════════════════════════════════════════════
 
 def characters_have_protagonist(state: NovelState) -> tuple[bool, str]:
-    from state import CharacterRole
+    from persistence.state import CharacterRole
     pros = [c for c in state.characters if c.role == CharacterRole.PROTAGONIST]
     if not pros:
         return False, "缺少主角"
@@ -98,7 +98,7 @@ def characters_have_protagonist(state: NovelState) -> tuple[bool, str]:
 
 def characters_meet_count_targets(state: NovelState) -> tuple[bool, str]:
     """按 config 数量目标检查各角色类型"""
-    from state import CharacterRole
+    from persistence.state import CharacterRole
     from config import MAJOR_ALLIES_MIN, ANTAGONISTS_MIN
     counts = {r: 0 for r in CharacterRole}
     for c in state.characters:
@@ -125,7 +125,7 @@ def characters_cover_narrative_functions(state: NovelState) -> tuple[bool, str]:
 
 def characters_have_relationships(state: NovelState) -> tuple[bool, str]:
     """非主角角色的 relationships 不能为空（每个配角至少 1 条关系）"""
-    from state import CharacterRole
+    from persistence.state import CharacterRole
     missing = [
         c.name for c in state.characters
         if c.role != CharacterRole.PROTAGONIST
@@ -231,7 +231,7 @@ def validate_and_regen(
         # 触发重生
         try:
             if use_model_fallback:
-                from fallback_runner import run_with_model_fallback
+                from llm_layer.fallback_runner import run_with_model_fallback
                 run_with_model_fallback(
                     fn=lambda: (generator_fn(state), True)[1],
                     agent_name=f"regen-{section_name}",

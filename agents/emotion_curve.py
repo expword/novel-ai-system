@@ -11,8 +11,8 @@ EmotionCurveAgent — Phase 3-D2：每卷情绪曲线规划。
 - 高点位置与描述
 - 与上卷的情绪对冲（不要连续两卷同一基调）
 """
-from json_utils import request_json, pick_list
-from state import NovelState, EmotionCurve, EmotionNote
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, EmotionCurve, EmotionNote
 from agents.concept_pitch import format_concept_brief
 
 

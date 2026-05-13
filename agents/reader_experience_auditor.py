@@ -20,7 +20,7 @@
 from __future__ import annotations
 from typing import Optional
 
-from state import NovelState, ReaderExperienceAudit, ReaderExperienceIssue
+from persistence.state import NovelState, ReaderExperienceAudit, ReaderExperienceIssue
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -248,7 +248,7 @@ def audit_chapter(
     从读者视角审一章。
     返回 ReaderExperienceAudit 或 None（失败静默跳过，不阻塞写作）。
     """
-    from json_utils import run_chapter_audit
+    from utils.json_utils import run_chapter_audit
 
     book_ctx = _format_book_context(state)
     recent_ctx = _format_recent_context(state, chapter_index)

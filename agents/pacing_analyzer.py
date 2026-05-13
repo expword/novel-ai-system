@@ -9,8 +9,8 @@ PacingAnalyzerAgent — Phase 5：章节节奏统计分析。
 偏离预设太多就报警。输出写回 ChapterSummary.pacing_stats。
 用 LLM 做比例判断（比正则扫描更准）。
 """
-from json_utils import request_json
-from state import NovelState, ChapterDirective, ChapterSummary, ChapterPacingStats
+from utils.json_utils import request_json
+from persistence.state import NovelState, ChapterDirective, ChapterSummary, ChapterPacingStats
 
 
 SYSTEM = """你是小说节奏分析师。

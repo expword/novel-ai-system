@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-from state import NovelState, StoryThread
+from persistence.state import NovelState, StoryThread
 
 
 _CHAPTER_PREFIX_RE = re.compile(r"^\[第(\d+)章\]")

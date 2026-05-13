@@ -20,14 +20,14 @@ SetupReviewer —— 章节完稿后的"设定合规审核"智能体。
   · 轻量提示词——让审核跑得快（每章增加 5-15 秒而非 30+ 秒）
 """
 from __future__ import annotations
-from json_utils import request_json_with_profile
-from state import NovelState, ChapterDirective
+from utils.json_utils import request_json_with_profile
+from persistence.state import NovelState, ChapterDirective
 
 # 优先从 user_models 找 usage="reviewer" 的配置——支持 UI 自定义
 # 找不到再 fallback 到内置审核 profile
 def _reviewer_profile_id() -> str:
     try:
-        import user_models as _um
+        from llm_layer import user_models as _um
         um = _um.find_by_usage("reviewer")
         if um:
             return um["id"]  # 用 user_models 的 id，chat_with_profile 会识别

@@ -71,61 +71,64 @@ python main.py
 
 ```
 xiaoshuo/
-├─ main.py                        # CLI 入口
-├─ run_web.py                     # Web 入口
+├─ main.py                          # CLI 入口
+├─ run_web.py                       # Web 入口
+├─ config.py                        # 全局配置（轮数/阈值/字数 等）
 ├─ requirements.txt
-├─ user_models.example.json       # LLM 配置模板（拷贝为 user_models.json）
+├─ user_models.example.json         # LLM 配置模板（拷贝为 user_models.json）
+├─ README.md / ARCHITECTURE.md / .gitignore
 │
-├─ 流程总控（核心调度器）
-│   ├─ director.py                # 主流程：30 phase + 卷级 + 章级写作管线
-│   ├─ scheduler.py               # 并发任务调度器（DAG）
-│   ├─ scheduler_tasks.py         # 30 phase 任务定义 + 依赖关系
-│   └─ project_manager.py         # 项目 CRUD + 子进程管理
+├─ core/                            # 流程总控
+│   ├─ director.py                  # 30 phase + 卷级 + 章级写作管线
+│   ├─ scheduler.py                 # 并发任务调度器（DAG）
+│   └─ scheduler_tasks.py           # 30 phase 任务定义 + 依赖
 │
-├─ 状态与持久化
-│   ├─ state.py                   # NovelState dataclass 集合（138K，几十个嵌套数据类）
-│   ├─ checkpoint.py              # save_state / load_state / mark_phase_done
-│   ├─ state_storage.py           # 分文件分段存储
-│   ├─ state_audit.py             # state 一致性校验
-│   ├─ chapter_cleanup.py         # 删章时清 18 类派生数据
+├─ persistence/                     # 状态层 + 章节清理
+│   ├─ state.py                     # NovelState dataclass 集合（几十个嵌套数据类）
+│   ├─ checkpoint.py                # save_state / load_state / mark_phase_done
+│   ├─ state_storage.py             # 分文件分段存储
+│   ├─ state_audit.py               # state 一致性校验
+│   ├─ chapter_cleanup.py           # 删章时清 18 类派生数据
 │   ├─ entity_cleanup.py
-│   └─ version_control.py         # 快照 + 回滚
+│   └─ version_control.py           # 快照 + 回滚
 │
-├─ LLM 调度层
-│   ├─ llm.py                     # 主接口 chat() / chat_stream()
-│   ├─ llm_pool.py                # 并发池 + 速率限制 + 熔断器
-│   ├─ llm_profiles.py            # 模型 profile
-│   ├─ llm_runtime.py             # 运行时 profile 路由
-│   ├─ user_models.py             # user_models.json 读取
-│   └─ fallback_runner.py         # 主模型失败兜底
+├─ llm_layer/                       # LLM 调度
+│   ├─ llm.py                       # 主接口 chat() / chat_stream()
+│   ├─ llm_pool.py                  # 并发池 + 速率限制 + 熔断器
+│   ├─ llm_profiles.py              # 模型 profile
+│   ├─ llm_runtime.py               # 运行时 profile 路由
+│   ├─ user_models.py               # user_models.json 读取
+│   └─ fallback_runner.py           # 主模型失败兜底
 │
-├─ agents/                        # 60+ 个职能型 agent
+├─ project_mgmt/                    # 项目管理 + HITL
+│   ├─ project_context.py           # 当前项目路径绑定
+│   ├─ project_manager.py           # 项目 CRUD + 子进程管理
+│   └─ human_in_loop.py             # HITL 关卡
+│
+├─ utils/                           # 通用工具
+│   ├─ json_utils.py                # 带重试的 LLM JSON 请求
+│   ├─ context_manager.py           # 上下文窗口管理
+│   ├─ invariants.py                # 不变量检查
+│   ├─ validators.py                # 数据校验
+│   ├─ ops_tracker.py               # 操作日志
+│   ├─ prompts_registry.py
+│   └─ concurrency.py
+│
+├─ agents/                          # 60+ 个职能型 agent
 │   │   每个 agent 做一件事：分析意图 / 设计人物 / 写章 / 审校 / 等
 │   │   详见 ARCHITECTURE.md 的 agent 分层
 │   └─ ...
 │
-├─ web/                           # Flask Web UI
-│   ├─ app.py                     # 主服务（REST API）
-│   ├─ rewrite_chapter.py         # 重写一章入口
-│   ├─ write_next_chapter.py      # 写下一章入口
-│   ├─ regenerate.py              # 重生某个 phase
+├─ web/                             # Flask Web UI
+│   ├─ app.py                       # 主服务（REST API）
+│   ├─ rewrite_chapter.py           # 重写一章入口
+│   ├─ write_next_chapter.py        # 写下一章入口
+│   ├─ regenerate.py                # 重生某个 phase
 │   ├─ vendor_loader.py
-│   └─ static/                    # 前端 HTML/JS/CSS
+│   └─ static/                      # 前端 HTML/JS/CSS
 │
-├─ prompts/                       # prompt 覆盖配置
-│   └─ overrides.json
-│
-└─ 辅助工具
-    ├─ config.py                  # 全局配置（轮数 / 阈值 / 字数 等）
-    ├─ json_utils.py              # 带重试的 LLM JSON 请求
-    ├─ context_manager.py         # 上下文窗口管理
-    ├─ invariants.py              # 不变量检查
-    ├─ validators.py              # 数据校验
-    ├─ project_context.py         # 当前项目路径绑定
-    ├─ human_in_loop.py           # HITL 关卡
-    ├─ ops_tracker.py             # 操作日志
-    ├─ prompts_registry.py
-    └─ concurrency.py
+└─ prompts/                         # prompt 覆盖配置
+    └─ overrides.json
 ```
 
 详细分层 + 30 phase 流程图见 [ARCHITECTURE.md](./ARCHITECTURE.md)。

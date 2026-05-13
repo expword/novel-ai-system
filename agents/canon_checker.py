@@ -18,7 +18,7 @@ CanonCheckerAgent —— 设定护栏（确定性、无 LLM、快）。
 from __future__ import annotations
 import re
 from dataclasses import dataclass
-from state import NovelState
+from persistence.state import NovelState
 
 
 # 中文专有名词的四种常见包裹符

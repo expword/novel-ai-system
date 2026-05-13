@@ -17,8 +17,8 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from concurrency import parallel_map
-from state import NovelState
+from utils.concurrency import parallel_map
+from persistence.state import NovelState
 
 
 # ═══════════════════════════════════════════════════════

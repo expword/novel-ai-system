@@ -11,7 +11,7 @@
 from __future__ import annotations
 from typing import Optional
 
-from state import NovelState, AbilityAudit, AbilityUse, AbilityIssue
+from persistence.state import NovelState, AbilityAudit, AbilityUse, AbilityIssue
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -188,7 +188,7 @@ def audit_chapter(
     返回 AbilityAudit；失败返回 None（调用方静默跳过）。
     不抛异常——这是 nice-to-have 的增强，不能阻塞写作。
     """
-    from json_utils import run_chapter_audit
+    from utils.json_utils import run_chapter_audit
 
     settings_block = _format_gold_finger(state)
     character_block = _format_character_state(state, chapter_index)

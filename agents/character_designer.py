@@ -11,9 +11,9 @@ CharacterDesignerAgent — 两阶段人物设计。
 - 每个人物都有"对读者隐藏的秘密"
 """
 from typing import Optional
-from json_utils import repair_json, request_json, pick_list
-from llm import system_user
-from state import NovelState, Character, CharacterRole, Relationship
+from utils.json_utils import repair_json, request_json, pick_list
+from llm_layer.llm import system_user
+from persistence.state import NovelState, Character, CharacterRole, Relationship
 from config import (
     NUM_VOLUMES,
     PROTAGONIST_CIRCLE_MIN, PROTAGONIST_CIRCLE_MAX,
@@ -119,7 +119,7 @@ def _design_by_slots(state: NovelState) -> None:
       - 多个角色可并发（NUM_SLOTS / PARALLEL_WORKERS 倍加速）
       - 主角必须先跑（其他角色的 contrast_with_protagonist 要参照主角）
     """
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
     from config import PARALLEL_WORKERS
     from agents.master_dispatcher import format_master_brief
 
@@ -183,9 +183,9 @@ def _topup_to_config_targets(state: NovelState, common_ctx: str, prot_sketch: st
     根据 config 里的 MAJOR_ALLIES_MAX / ANTAGONISTS_MAX 数量，如果还不够就补齐——
     通过一次"补槽位"LLM 产出若干 CharacterSlot，然后并发填充。
     """
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
     from config import PARALLEL_WORKERS
-    from state import CharacterSlot
+    from persistence.state import CharacterSlot
 
     # 数当前各 role_tag 数量
     by_role = {"主角": 0, "主要配角": 0, "次要配角": 0, "反派": 0, "卷内角色": 0}
@@ -215,9 +215,9 @@ def _topup_slots_for_role(state: NovelState, role_tag: str, gap: int,
     为指定 role_tag 生成 gap 个补充槽位 + 并发填充。
     一次 LLM 产 gap 个轻量槽位（只要 narrative_function + brief_hint），然后并发填详情。
     """
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
     from config import PARALLEL_WORKERS
-    from state import CharacterSlot
+    from persistence.state import CharacterSlot
     from agents.master_dispatcher import format_master_brief
 
     existing_names = [c.name for c in state.characters]
@@ -503,7 +503,7 @@ def _function_specific_guide(function: str, support_role: str) -> str:
 
 def _design_by_legacy_batches(state: NovelState) -> None:
     """老架构（无 MasterOutline 时退化）：主角圈→盟友→反派→扩展四批次串行。"""
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
     from config import PARALLEL_WORKERS
 
     # Step 1: 主角圈

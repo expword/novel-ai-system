@@ -14,9 +14,9 @@ for i, a in enumerate(sys.argv):
 if _proj_arg:
     os.environ["XIAOSHUO_PROJECT_ID"] = _proj_arg
 
-import project_context  # 触发路径初始化
+from project_mgmt import project_context  # 触发路径初始化
 
-from director import DirectorAgent
+from core.director import DirectorAgent
 
 if __name__ == "__main__":
     # 用法：
@@ -38,7 +38,7 @@ if __name__ == "__main__":
         print(f"\n!! 子进程崩溃：{tb_short}")
         traceback.print_exc()
         try:
-            from checkpoint import add_progress_warning
+            from persistence.checkpoint import add_progress_warning
             add_progress_warning(
                 level="error",
                 source="director:crash",

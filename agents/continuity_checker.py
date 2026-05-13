@@ -8,8 +8,8 @@ Writer 写完后、Critic 之前跑一次。检查三类连续性问题：
 
 产出 issues 列表；如果有 critical 问题，会被 director 拿去触发 revise。
 """
-from json_utils import request_json, pick_list
-from state import NovelState, ChapterDirective
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, ChapterDirective
 
 
 SYSTEM = """你是小说连续性审核员。你的工作不是评文学，是抓漏洞。

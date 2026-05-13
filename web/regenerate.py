@@ -24,8 +24,8 @@ Regenerate —— 前端触发的上下游重建。
 from __future__ import annotations
 from typing import Callable
 
-from checkpoint import save_state, load_state
-import version_control
+from persistence.checkpoint import save_state, load_state
+from persistence import version_control
 
 
 def _load_or_error():
@@ -58,7 +58,7 @@ def _assert_upstream(state, label: str, **specs) -> None:
         return
     msg = f"重建【{label}】失败——上游缺失：{' / '.join(missing)}。请先重建对应上游模块再回来。"
     try:
-        from checkpoint import add_progress_warning
+        from persistence.checkpoint import add_progress_warning
         add_progress_warning(level="error", source=f"regen:{label}", message=msg)
     except Exception:
         pass
@@ -337,7 +337,7 @@ def regen_master_outline() -> dict:
 
 def regen_volumes() -> dict:
     from agents.volume_planner import plan_all_volumes_dispatched
-    from entity_cleanup import after_regen_volumes
+    from persistence.entity_cleanup import after_regen_volumes
     state = _load_or_error()
     _assert_upstream(state, "卷结构",
         master_outline=lambda s: bool(s.master_outline and s.master_outline.generated),
@@ -352,7 +352,7 @@ def regen_volumes() -> dict:
 
 def regen_factions() -> dict:
     from agents.faction_architect import design_factions
-    from entity_cleanup import after_regen_factions
+    from persistence.entity_cleanup import after_regen_factions
     state = _load_or_error()
     _assert_upstream(state, "势力格局",
         power_system=lambda s: bool(s.power_system),
@@ -385,7 +385,7 @@ def regen_timeline() -> dict:
 
 def regen_characters() -> dict:
     from agents.character_designer import design_all_characters
-    from entity_cleanup import after_regen_characters
+    from persistence.entity_cleanup import after_regen_characters
     state = _load_or_error()
     _assert_upstream(state, "人物档案",
         master_outline=lambda s: bool(s.master_outline and s.master_outline.generated),
@@ -401,7 +401,7 @@ def regen_characters() -> dict:
 
 def regen_satisfaction() -> dict:
     from agents.satisfaction_system import plan_all_satisfaction_points
-    from entity_cleanup import after_regen_satisfaction
+    from persistence.entity_cleanup import after_regen_satisfaction
     state = _load_or_error()
     _assert_upstream(state, "爽点系统",
         volumes=lambda s: bool(s.volumes),
@@ -416,7 +416,7 @@ def regen_satisfaction() -> dict:
 
 def regen_foreshadows() -> dict:
     from agents.foreshadow_manager import plan_all_foreshadowing
-    from entity_cleanup import after_regen_foreshadows
+    from persistence.entity_cleanup import after_regen_foreshadows
     state = _load_or_error()
     _assert_upstream(state, "伏笔体系",
         volumes=lambda s: bool(s.volumes),
@@ -431,7 +431,7 @@ def regen_foreshadows() -> dict:
 
 def regen_twists() -> dict:
     from agents.twist_designer import design_twists
-    from state import TwistSystem
+    from persistence.state import TwistSystem
     state = _load_or_error()
     _assert_upstream(state, "反转系统",
         volumes=lambda s: bool(s.volumes),
@@ -446,7 +446,7 @@ def regen_twists() -> dict:
 
 def regen_lines() -> dict:
     from agents.line_planner import plan_global_lines, plan_all_volume_lines_parallel
-    from entity_cleanup import after_regen_lines
+    from persistence.entity_cleanup import after_regen_lines
     state = _load_or_error()
     _assert_upstream(state, "叙事线",
         volumes=lambda s: bool(s.volumes),
@@ -464,7 +464,7 @@ def regen_lines() -> dict:
 
 def regen_all_stages() -> dict:
     from agents.stage_architect import design_volume_stages
-    from entity_cleanup import after_regen_stages
+    from persistence.entity_cleanup import after_regen_stages
     from config import NUM_VOLUMES
     state = _load_or_error()
     _assert_upstream(state, "叙事舞台",

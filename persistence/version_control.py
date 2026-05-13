@@ -14,11 +14,11 @@ import dataclasses
 from datetime import datetime
 from typing import Optional
 
-from state import NovelState, VersionSnapshot
-from checkpoint import _to_json, _load_state, STATE_FILE
+from persistence.state import NovelState, VersionSnapshot
+from persistence.checkpoint import _to_json, _load_state, STATE_FILE
 
 
-import project_context as _pctx
+from project_mgmt import project_context as _pctx
 HISTORY_DIR = _pctx.history_dir()
 MAX_SNAPSHOTS = 50   # 超过这个数自动清理最旧的
 
@@ -126,7 +126,7 @@ def rollback(timestamp: str, label_hint: str = "") -> Optional[NovelState]:
 
     # 1. 备份当前分片 state（便于事故回滚回滚）
     try:
-        import state_storage
+        from persistence import state_storage
         sd = state_storage.state_dir()
         if os.path.isdir(sd):
             bak_dir = sd + ".before_rollback_" + datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -149,7 +149,7 @@ def rollback(timestamp: str, label_hint: str = "") -> Optional[NovelState]:
 
     # 4. 【关键】把恢复的 state 刷回分片目录——否则 load_state 优先读分片，回滚无效
     try:
-        import state_storage
+        from persistence import state_storage
         sd = state_storage.state_dir()
         # 清掉旧分片再全量重写（避免"已删字段的老 section 文件"遗留）
         if os.path.isdir(sd):

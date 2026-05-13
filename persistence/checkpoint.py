@@ -11,7 +11,7 @@ import dataclasses
 from enum import Enum
 from typing import Any
 
-from state import (
+from persistence.state import (
     NovelState, PowerSystem, Realm, SpecialAbility, AbilityAwakeningStage, LifecycleNode, PowerMechanic,
     Faction, FactionRelation, FactionInfiltration,
     SatisfactionPoint, SatisfactionSetup, SatisfactionType,
@@ -38,7 +38,7 @@ from state import (
     GlossaryEntry, VersionSnapshot, PendingApproval,
 )
 
-import project_context as _pctx
+from project_mgmt import project_context as _pctx
 CHECKPOINT_DIR = _pctx.checkpoint_dir()
 STATE_FILE = _pctx.state_file()
 PROGRESS_FILE = _pctx.progress_file()
@@ -853,7 +853,7 @@ def _load_travel_distance(d: dict) -> TravelDistance:
 
 
 def _load_route_stage(d: dict):
-    from state import RouteStage
+    from persistence.state import RouteStage
     return RouteStage(
         volume=int(d.get("volume", 1)),
         primary_region_id=d.get("primary_region_id", ""),
@@ -1019,7 +1019,7 @@ def _load_state(d: dict) -> NovelState:
 
     # 氛围库（单体 JSON 兼容）
     try:
-        from state_storage import _load_atmosphere_library
+        from persistence.state_storage import _load_atmosphere_library
         atmo = d.get("atmosphere_library")
         if atmo:
             state.atmosphere_library = _load_atmosphere_library(atmo)
@@ -1033,7 +1033,7 @@ def _load_state(d: dict) -> NovelState:
     }
     # 章节对话历史：JSON key 回来是 str，需要转 int
     # 加字段过滤，兼容老快照里可能多出/少出字段的场景
-    from state import ChatMessage
+    from persistence.state import ChatMessage
     import dataclasses as _dc
     _CM_FIELDS = {f.name for f in _dc.fields(ChatMessage)}
     raw_chats = d.get("chapter_chats", {}) or {}
@@ -1054,7 +1054,7 @@ def _load_state(d: dict) -> NovelState:
         state.chapter_chats[ci] = parsed
 
     # 章节能力审计
-    from state import AbilityAudit, AbilityUse, AbilityIssue
+    from persistence.state import AbilityAudit, AbilityUse, AbilityIssue
     _AU_FIELDS = {f.name for f in _dc.fields(AbilityUse)}
     _AI_FIELDS = {f.name for f in _dc.fields(AbilityIssue)}
     _AA_FIELDS = {f.name for f in _dc.fields(AbilityAudit)}
@@ -1095,7 +1095,7 @@ def _load_state(d: dict) -> NovelState:
             print(f"  [load_state] ability_audits[{ci}] 解析失败，跳过：{type(e).__name__}: {e}")
 
     # 读者视角审计
-    from state import ReaderExperienceAudit, ReaderExperienceIssue
+    from persistence.state import ReaderExperienceAudit, ReaderExperienceIssue
     _RI_FIELDS = {f.name for f in _dc.fields(ReaderExperienceIssue)}
     _RA_FIELDS = {f.name for f in _dc.fields(ReaderExperienceAudit)}
     raw_r = d.get("reader_audits", {}) or {}
@@ -1124,7 +1124,7 @@ def _load_state(d: dict) -> NovelState:
             print(f"  [load_state] reader_audits[{ci}] 解析失败：{type(e).__name__}: {e}")
 
     # 对话审计
-    from state import DialogueAudit, DialogueIssue
+    from persistence.state import DialogueAudit, DialogueIssue
     _DI_FIELDS = {f.name for f in _dc.fields(DialogueIssue)}
     _DA_FIELDS = {f.name for f in _dc.fields(DialogueAudit)}
     raw_d = d.get("dialogue_audits", {}) or {}
@@ -1158,7 +1158,7 @@ def _load_state(d: dict) -> NovelState:
 
     # Stage / Volume 级审查（legacy single-file 兼容）
     try:
-        from state import ReviewIssue
+        from persistence.state import ReviewIssue
         import dataclasses as _dc
         _RI = {f.name for f in _dc.fields(ReviewIssue)}
         raw_sr = d.get("stage_review_reports", {}) or {}
@@ -1207,7 +1207,7 @@ def save_state(state: NovelState):
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     # 新：分文件
     try:
-        import state_storage
+        from persistence import state_storage
         state_storage.save_split(state)
     except Exception as e:
         # 分文件失败就 fallback 到单文件
@@ -1222,7 +1222,7 @@ def save_state_section(state: NovelState, section_name: str):
     大幅降低 mark_phase_done / mark_chapter_done 的磁盘 IO。
     """
     try:
-        import state_storage
+        from persistence import state_storage
         # meta 字段的增量保存
         if section_name == "meta":
             state_storage.save_meta(state)
@@ -1240,8 +1240,8 @@ def load_state() -> NovelState | None:
       2. 若老项目只有 state.json → 自动迁移后加载
       3. 都没有 → 返回 None
     """
-    import state_storage
-    from state import NovelState as _NS
+    from persistence import state_storage
+    from persistence.state import NovelState as _NS
 
     # 老项目迁移——幂等，若已迁移过直接跳过
     if os.path.exists(STATE_FILE):
@@ -1335,7 +1335,7 @@ def mark_phase_done_if(phase: str, state: NovelState, predicate, *, on_skip_msg:
 def _progress_status_path(project_id: str = None) -> str:
     """获取（指定或当前）项目的 progress_status.json 路径——延迟 import 避免循环。"""
     try:
-        import project_context
+        from project_mgmt import project_context
         return project_context.progress_status_file(project_id)
     except Exception:
         return ""

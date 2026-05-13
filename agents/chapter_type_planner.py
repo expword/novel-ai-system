@@ -6,8 +6,8 @@ ChapterTypePlannerAgent — Phase 4-C：每卷章节类型配比规划。
 
 这个 agent 按卷规划每章的类型——让节奏从一开始就是被设计好的，不是临场发挥的。
 """
-from json_utils import request_json, pick_list
-from state import (
+from utils.json_utils import request_json, pick_list
+from persistence.state import (
     NovelState, CHAPTER_TYPES,
     VolumeChapterTypeDistribution, ChapterTypeAssignment,
 )

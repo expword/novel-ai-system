@@ -31,14 +31,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from checkpoint import load_state, save_state, STATE_FILE, _to_json, _load_state
-from state import NovelState
-import version_control
-import invariants
-import project_context
-import project_manager
+from persistence.checkpoint import load_state, save_state, STATE_FILE, _to_json, _load_state
+from persistence.state import NovelState
+from persistence import version_control
+from utils import invariants
+from project_mgmt import project_context
+from project_mgmt import project_manager
 from web import regenerate as regen_mod
-import ops_tracker
+from utils import ops_tracker
 # 注意：不从 config import OUTPUT_DIR——它在模块加载时冻结，切换项目后会指向错误路径。
 # 所有路径请用 project_context.project_dir() 按请求动态获取。
 
@@ -48,7 +48,7 @@ project_manager.migrate_legacy_output_to_main()
 
 # 启动时应用用户自定义的 prompt 覆盖（prompts/overrides.json → setattr 到各 agent 模块）
 try:
-    import prompts_registry
+    from utils import prompts_registry
     prompts_registry.apply_all_overrides()
 except Exception as e:
     print(f"[startup] 应用 prompt 覆盖失败（不影响启动）：{type(e).__name__}: {e}")
@@ -169,7 +169,7 @@ def api_projects_create():
                 project_context.set_project(pid)
                 from agents.intent_analyzer import analyze_intent
                 from agents.concept_pitch import design_concept_phase
-                from checkpoint import load_state, save_state as _save_state, mark_phase_done
+                from persistence.checkpoint import load_state, save_state as _save_state, mark_phase_done
 
                 ops_tracker.set_progress(pid, agent="IntentAnalyzer", detail="分析作者意图（LLM 调用中）")
                 s = load_state()
@@ -333,7 +333,7 @@ def api_project_next_phase_group(project_id):
     返回当前已完成到哪一组、下一组是什么、各组进度。
     供前端在 stepwise 模式下显示"▶ 继续下一阶段"或"📝 框架就绪"横幅。
     """
-    import project_manager
+    from project_mgmt import project_manager
     import json as _j
 
     pf = project_context.progress_file(project_id)
@@ -398,7 +398,7 @@ def _read_current_step(project_id: str) -> dict:
     并发写会把一次写的尾巴留在另一次写的内容之后，导致字节级损坏。
     读端能宽容地吞掉（下一次写会覆盖掉坏字节）。
     """
-    import project_context
+    from project_mgmt import project_context
     path = project_context.progress_status_file(project_id)
     if not os.path.exists(path):
         return {}
@@ -413,7 +413,7 @@ def _read_current_step(project_id: str) -> dict:
 def api_llm_pool_stats():
     """LLM 池实时状态——并发数/速率/熔断/最近延迟。"""
     try:
-        import llm_pool
+        from llm_layer import llm_pool
         return jsonify(llm_pool.get_default_pool().stats())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -428,7 +428,7 @@ def api_project_progress(project_id):
 @app.route("/api/projects/<project_id>/warnings/clear", methods=["POST"])
 def api_clear_warnings(project_id):
     """清空 progress_status.json 的 warnings 数组（用户在前端点"清除"调用）。"""
-    from checkpoint import clear_progress_warnings
+    from persistence.checkpoint import clear_progress_warnings
     clear_progress_warnings(project_id=project_id)
     return jsonify({"ok": True})
 
@@ -659,7 +659,7 @@ def api_get_section(name):
 
     # Fast path：直接读分文件 JSON（split state）
     try:
-        import state_storage
+        from persistence import state_storage
         spec = state_storage._init_spec()
         if name in spec:
             path = state_storage.section_file(name)
@@ -771,7 +771,7 @@ def api_approve(approval_id):
     if not found:
         abort(404)
     # 同步审批文件
-    import human_in_loop
+    from project_mgmt import human_in_loop
     human_in_loop.check_pending_approvals(s)  # 这个会扫外部文件也同步进来
     save_state(s)
     return jsonify({"status": "ok"})
@@ -813,9 +813,9 @@ def api_write_next_chapter(project_id):
 @app.route("/api/projects/<project_id>/chapter/next_unwritten", methods=["GET"])
 def api_next_unwritten_chapter(project_id):
     """查询下一个未写的章号——前端按钮显示"写第 N 章"。"""
-    import project_context
+    from project_mgmt import project_context
     project_context.set_project(project_id)
-    from checkpoint import load_state, load_progress
+    from persistence.checkpoint import load_state, load_progress
     from web.write_next_chapter import _next_unwritten
     state = load_state()
     if state is None or not state.volumes:
@@ -1189,8 +1189,8 @@ def api_chapter_preview(project_id, index):
 @app.route("/api/llm_profiles")
 def api_llm_profiles():
     """返回所有可选模型（用户自定义优先 + 内置目录合并）。"""
-    import llm_profiles
-    import user_models
+    from llm_layer import llm_profiles
+    from llm_layer import user_models
     user_list = user_models.list_all(include_key=False)
     # 把内置 PROFILES 也暴露（注意 provider 分组，UI 好展示）
     builtin = [{"id": pid, "_builtin": True, **prof}
@@ -1207,14 +1207,14 @@ def api_llm_profiles():
 @app.route("/api/user_models", methods=["GET"])
 def api_user_models_list():
     """列出所有用户自定义模型（api_key 遮挡）。"""
-    import user_models
+    from llm_layer import user_models
     return jsonify({"models": user_models.list_all(include_key=False)})
 
 
 @app.route("/api/user_models", methods=["POST"])
 def api_user_models_add():
     """新增用户自定义模型。"""
-    import user_models
+    from llm_layer import user_models
     body = request.get_json() or {}
     try:
         entry = user_models.add(body)
@@ -1230,7 +1230,7 @@ def api_user_models_add():
 @app.route("/api/user_models/<model_id>", methods=["PUT"])
 def api_user_models_update(model_id):
     """更新——字段可部分传。api_key 留空则保留原 key。"""
-    import user_models
+    from llm_layer import user_models
     body = request.get_json() or {}
     try:
         entry = user_models.update(model_id, body)
@@ -1244,7 +1244,7 @@ def api_user_models_update(model_id):
 
 @app.route("/api/user_models/<model_id>", methods=["DELETE"])
 def api_user_models_delete(model_id):
-    import user_models
+    from llm_layer import user_models
     ok = user_models.remove(model_id)
     if not ok:
         return jsonify({"error": f"未找到 id={model_id}"}), 404
@@ -1257,8 +1257,8 @@ def api_project_llm_profile_get(project_id):
     查项目当前主模型。支持用户模型和内置模型——用 llm_runtime._lookup_profile
     统一查，避免用 llm_profiles.get() 对未知 id 静默回退默认导致展示错误。
     """
-    import llm_runtime
-    import llm_profiles
+    from llm_layer import llm_runtime
+    from llm_layer import llm_profiles
     pid = llm_runtime.get_project_profile_id(project_id)
     prof = llm_runtime._lookup_profile(pid) or llm_profiles.get(pid)
     # 遮挡 API key
@@ -1272,7 +1272,7 @@ def api_project_llm_profile_get(project_id):
 
 @app.route("/api/projects/<project_id>/llm_profile", methods=["PUT"])
 def api_project_llm_profile_set(project_id):
-    import llm_runtime
+    from llm_layer import llm_runtime
     body = request.get_json() or {}
     pid = body.get("profile_id")
     if not pid:
@@ -1370,7 +1370,7 @@ def api_chapter_delete(index):
       - 如果删到卷首，重置卷内状态
     """
     import glob as _glob
-    from checkpoint import save_state, load_progress, _save_progress
+    from persistence.checkpoint import save_state, load_progress, _save_progress
 
     mode = request.args.get("mode", "this_and_after")
     if mode not in ("only_this", "this_and_after", "all"):
@@ -1427,7 +1427,7 @@ def api_chapter_delete(index):
     # 包含 memory、character_state_history、world_events、tension_history、
     # satisfaction/foreshadow/red_herring/fortune 的触发状态、叙事线阶段、
     # story_thread（尾部删时重置）等
-    from chapter_cleanup import cleanup_chapter_state
+    from persistence.chapter_cleanup import cleanup_chapter_state
     cleanup_chapter_state(s, to_delete)
 
     # ── 存 state ──
@@ -1456,7 +1456,7 @@ _CHAT_PROMPT_ID = "agents.chat_editor:SYSTEM_TEMPLATE"
 
 
 def _build_chat_system_prompt(state, chapter_index, vol, summary, chapter_text):
-    from state import ChatMessage  # noqa
+    from persistence.state import ChatMessage  # noqa
     from agents import chat_editor as _chat_editor
     history = state.chapter_chats.get(chapter_index, []) or []
     prior_user_msgs = [m.content.strip() for m in history if m.role == "user" and m.content.strip()]
@@ -1468,7 +1468,7 @@ def _build_chat_system_prompt(state, chapter_index, vol, summary, chapter_text):
         )
     else:
         prior_block = ""
-    from state import count_chapter_words
+    from persistence.state import count_chapter_words
     wc = count_chapter_words(chapter_text)
     template = getattr(_chat_editor, "SYSTEM_TEMPLATE", "")
     try:
@@ -1484,7 +1484,7 @@ def _build_chat_system_prompt(state, chapter_index, vol, summary, chapter_text):
     except (KeyError, IndexError) as e:
         # 用户把模板里的格式变量改坏了——回退到原始模板
         print(f"[chat] system 模板 format 失败（{type(e).__name__}: {e}），使用代码默认值")
-        import prompts_registry as pr
+        from utils import prompts_registry as pr
         entry = pr.get_entry(_CHAT_PROMPT_ID)
         fallback = entry.default if entry else ""
         return fallback.format(
@@ -1509,7 +1509,7 @@ def _ensure_chapter_word_counts_migrated(project_id: str) -> None:
         return
     _word_count_migrated_projects.add(project_id)
     try:
-        import state_storage
+        from persistence import state_storage
         path = state_storage.section_file("completed_chapters")
         if not os.path.exists(path):
             return
@@ -1517,7 +1517,7 @@ def _ensure_chapter_word_counts_migrated(project_id: str) -> None:
             data = json.load(f)
         if not isinstance(data, list) or not data:
             return
-        from state import count_chapter_words
+        from persistence.state import count_chapter_words
         changed = 0
         for c in data:
             idx = c.get("index")
@@ -1620,8 +1620,8 @@ def api_chapter_chat_send(index):
 
     def generate():
         import datetime as _dt
-        from llm import chat_stream
-        from state import ChatMessage
+        from llm_layer.llm import chat_stream
+        from persistence.state import ChatMessage
         acc: list[str] = []
         try:
             for piece in chat_stream(messages, temperature=0.85, max_tokens=12000):
@@ -1687,7 +1687,7 @@ def api_chapter_chat_accept(index):
     with open(path, "w", encoding="utf-8") as f:
         f.write(new_text)
 
-    from state import count_chapter_words
+    from persistence.state import count_chapter_words
     wc = count_chapter_words(new_text)
     summary = next((c for c in s.completed_chapters if c.index == index), None)
     if summary:
@@ -2101,7 +2101,7 @@ def api_atmosphere_design():
         return jsonify({"error": "生成失败（LLM 无返回）"}), 500
 
     if s.atmosphere_library is None:
-        from state import AtmosphereLibrary
+        from persistence.state import AtmosphereLibrary
         s.atmosphere_library = AtmosphereLibrary()
     s.atmosphere_library.upsert(sc)
     save_state(s)
@@ -2180,7 +2180,7 @@ def api_chapter_polish_stream(index):
         return jsonify({"error": "无 issue，无需润色"}), 400
 
     def generate():
-        from llm import chat_stream
+        from llm_layer.llm import chat_stream
         try:
             for piece in chat_stream(messages, temperature=0.5, max_tokens=12000):
                 data = json.dumps({"type": "delta", "text": piece}, ensure_ascii=False)
@@ -2228,7 +2228,7 @@ def api_chapter_polish_accept(index):
     with open(path, "w", encoding="utf-8") as f:
         f.write(new_text)
 
-    from state import count_chapter_words
+    from persistence.state import count_chapter_words
     summary = next((c for c in s.completed_chapters if c.index == index), None)
     if summary:
         summary.word_count = count_chapter_words(new_text)
@@ -2271,7 +2271,7 @@ def api_analyze_intent():
     否则后端跑一次 + 子进程再跑一次 = double LLM 调用。
     """
     from agents.intent_analyzer import analyze_intent
-    from checkpoint import mark_phase_done
+    from persistence.checkpoint import mark_phase_done
     s = _load()
     body = request.get_json() or {}
     desc = (body.get("raw_description") or "").strip()
@@ -2346,7 +2346,7 @@ def api_reanalyze_intent():
     """
     import glob as _glob
     import shutil
-    from checkpoint import save_state, _save_progress
+    from persistence.checkpoint import save_state, _save_progress
 
     body = request.get_json() or {}
     desc = (body.get("raw_description") or "").strip()
@@ -2386,7 +2386,7 @@ def api_reanalyze_intent():
 
         # ── Step 3: 清 state/ 目录（分文件存储）──
         ops_tracker.set_progress(pid, agent="reset", detail="清空 state section 文件")
-        import state_storage
+        from persistence import state_storage
         state_dir = state_storage.state_dir()
         # 删除所有 section 文件（包括 meta.json）——下面会重新写
         deleted_sections = 0
@@ -2412,9 +2412,9 @@ def api_reanalyze_intent():
         # ── Step 5: 构造全新 state——保留元信息 + 新意图 ──
         ops_tracker.set_progress(pid, agent="reset", detail="初始化新 state")
         # 从 meta.json（project-level）读元信息
-        from project_manager import _read_meta
+        from project_mgmt.project_manager import _read_meta
         meta = _read_meta(pid)
-        from state import NovelState, CreativeIntent
+        from persistence.state import NovelState, CreativeIntent
         fresh = NovelState(
             title=meta.get("title", pid),
             genre=meta.get("genre", ""),
@@ -2429,7 +2429,7 @@ def api_reanalyze_intent():
         # ── Step 6: 重新分析意图 ──
         ops_tracker.set_progress(pid, agent="IntentAnalyzer", detail="解析新意图")
         from agents.intent_analyzer import analyze_intent
-        from checkpoint import load_state, mark_phase_done
+        from persistence.checkpoint import load_state, mark_phase_done
         s = load_state()
         try:
             analyze_intent(s, desc)
@@ -2537,7 +2537,7 @@ def api_refine_intent():
 def api_validate_section(section):
     """手动触发 section 合规验证，只返回问题列表不重生。"""
     try:
-        import validators
+        from utils import validators
     except Exception:
         return jsonify({"error": "validators 模块加载失败"}), 500
     s = _load()
@@ -2716,7 +2716,7 @@ def api_chapter_inspiration_delete(chapter_index):
 @app.route("/api/prompts", methods=["GET"])
 def api_prompts_list():
     """列出所有已注册的系统提示词（按分类）。"""
-    import prompts_registry as pr
+    from utils import prompts_registry as pr
     entries = pr.all_entries()
     # 按注册顺序保留，同时给前端分组
     grouped: dict[str, list[dict]] = {}
@@ -2741,7 +2741,7 @@ def api_prompts_list():
 @app.route("/api/prompts/<path:prompt_id>", methods=["GET"])
 def api_prompt_get(prompt_id):
     """读取单个 prompt 的完整内容（含 default 与 current）。"""
-    import prompts_registry as pr
+    from utils import prompts_registry as pr
     entry = pr.get_entry(prompt_id)
     if not entry:
         return jsonify({"error": f"未注册的 prompt_id: {prompt_id}"}), 404
@@ -2761,7 +2761,7 @@ def api_prompt_get(prompt_id):
 @app.route("/api/prompts/<path:prompt_id>", methods=["POST", "PUT"])
 def api_prompt_save(prompt_id):
     """保存 prompt 覆盖。body={"text": "..."}；空串/等于默认会清除覆盖。"""
-    import prompts_registry as pr
+    from utils import prompts_registry as pr
     body = request.get_json(silent=True) or {}
     text = body.get("text", "")
     try:
@@ -2779,7 +2779,7 @@ def api_prompt_save(prompt_id):
 @app.route("/api/prompts/<path:prompt_id>", methods=["DELETE"])
 def api_prompt_delete(prompt_id):
     """删除 override，恢复到代码默认值。"""
-    import prompts_registry as pr
+    from utils import prompts_registry as pr
     try:
         entry = pr.delete_override(prompt_id)
     except Exception as e:
@@ -2794,7 +2794,7 @@ def api_state_audit():
     前端顶栏用它显示"⚠ 有 N 个模块未生成"banner。
     """
     try:
-        from state_audit import audit_state
+        from persistence.state_audit import audit_state
     except Exception as e:
         return jsonify({"error": f"state_audit 模块加载失败：{e}"}), 500
     s = _load()
@@ -2847,7 +2847,7 @@ def api_state_audit_fix(section):
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
     # 修复完返回最新审计 + 本次修复结果
-    from state_audit import audit_state
+    from persistence.state_audit import audit_state
     s = _load()
     return jsonify({
         "status": "ok",
@@ -2865,7 +2865,7 @@ def api_state_audit_fix_all():
     按预定义依赖顺序（power_system → volumes → factions → world → ...）执行。
     返回每个 section 的修复结果（含失败原因）。
     """
-    from state_audit import audit_state
+    from persistence.state_audit import audit_state
     s = _load()
     report = audit_state(s)
     # 依赖顺序——上游先修（这些键的顺序重要）
@@ -2962,7 +2962,7 @@ def _replace_volumes(state, d):
 
 
 def _replace_glossary(state, d):
-    from state import GlossaryEntry
+    from persistence.state import GlossaryEntry
     if not isinstance(d, list):
         return
     new_list = []
@@ -2997,7 +2997,7 @@ def _replace_power_system(state, d: dict):
     """允许前端整体 PUT power_system——支持改 special_abilities 字段（用户改能力名）。
     只更新 d 中明确出现的字段；缺失字段保留原值，避免前端只发一部分时把别的字段清空。
     """
-    from state import (
+    from persistence.state import (
         PowerSystem, Realm, SpecialAbility, AbilityAwakeningStage,
     )
     ps = state.power_system

@@ -17,9 +17,9 @@ StageArchitectAgent — 为每卷设计叙事舞台（Narrative Stages）。
 - 舞台有自然的进入/退出方式（保证故事流动感）
 - 所有设计都以【唯一主角】为中心——每个舞台/子场景都要明确"主角在这里要经历什么/变成什么"。
 """
-from json_utils import repair_json, pick_list, request_json
-from llm import system_user
-from state import NovelState, StoryStage, SubScene
+from utils.json_utils import repair_json, pick_list, request_json
+from llm_layer.llm import system_user
+from persistence.state import NovelState, StoryStage, SubScene
 from agents.fortune_planner import get_fortunes_for_volume_brief
 from agents.concept_pitch import format_world_context_brief
 

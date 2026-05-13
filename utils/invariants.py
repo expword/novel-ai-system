@@ -7,7 +7,7 @@ NovelState 是全局唯一事实源。所有 agent 都读它、写它。
 
 只报告，不自动修。调用方决定如何处理。
 """
-from state import NovelState
+from persistence.state import NovelState
 
 
 def check_all(state: NovelState) -> list[dict]:

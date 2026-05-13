@@ -12,8 +12,8 @@ VolumeReviewerAgent — 整卷写完后的卷级审查。
 输出 ReviewIssue 列表。
 """
 import os
-from json_utils import request_json
-from state import NovelState, ReviewIssue
+from utils.json_utils import request_json
+from persistence.state import NovelState, ReviewIssue
 import config
 
 

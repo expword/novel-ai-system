@@ -2,9 +2,9 @@
 RhythmDesignerAgent — 设计情节节奏：每卷节奏蓝图、喘息章、快慢交替模式。
 """
 import json
-from json_utils import repair_json, safe_parse, pick_list, request_json
-from llm import system_user
-from state import NovelState, VolumeRhythmPlan, RhythmSegment, RhythmType
+from utils.json_utils import repair_json, safe_parse, pick_list, request_json
+from llm_layer.llm import system_user
+from persistence.state import NovelState, VolumeRhythmPlan, RhythmSegment, RhythmType
 from config import NUM_VOLUMES
 
 

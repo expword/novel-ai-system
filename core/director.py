@@ -31,14 +31,14 @@ DirectorAgent — 总导演：管理12个智能体的完整执行流水线。
 import os
 import json
 from datetime import datetime
-from json_utils import repair_json, safe_parse
-from checkpoint import (
+from utils.json_utils import repair_json, safe_parse
+from persistence.checkpoint import (
     save_state, load_state, load_progress,
     mark_phase_done, mark_phase_done_if, mark_chapter_done,
     is_phase_done, is_chapter_done, clear_checkpoint,
     migrate_legacy_phase_ids,
 )
-from state import (
+from persistence.state import (
     NovelState, ChapterDirective, TensionLevel, RhythmType,
     SatisfactionPoint, ForeshadowItem,
 )
@@ -88,12 +88,12 @@ from agents.state_updater import update_state_after_chapter
 from agents.glossary_manager import update_glossary
 from agents.sensitive_filter import filter_and_report, format_report as format_sensitive_report
 from agents.drift_detector import detect_drift, print_drift_report
-import version_control
-import human_in_loop
-from human_in_loop import HITLPause
-import invariants
-import project_context
-import ops_tracker
+from persistence import version_control
+from project_mgmt import human_in_loop
+from project_mgmt.human_in_loop import HITLPause
+from utils import invariants
+from project_mgmt import project_context
+from utils import ops_tracker
 from config import (
     NOVEL_TITLE, NOVEL_GENRE, NOVEL_THEME,
     NUM_VOLUMES, WORDS_PER_CHAPTER,
@@ -102,7 +102,7 @@ from config import (
     HITL_MODE, DRIFT_CHECK_EVERY_N_CHAPTERS,
     INTENT_DESCRIPTION,
 )
-from llm import system_user
+from llm_layer.llm import system_user
 
 
 # ── 卷内张力曲线模板 ──────────────────────────────────
@@ -308,7 +308,7 @@ class DirectorAgent:
         # 必须用 _write_pid_record（带 create_time 锚点），否则 status() 会因为
         # PID 复用/in-process 写章把 web 进程 PID 长期当成 director 误判 running
         try:
-            import project_manager as _pm
+            from project_mgmt import project_manager as _pm
             _pm._write_pid_record(project_context.current(), os.getpid())
         except Exception:
             pass
@@ -353,7 +353,7 @@ class DirectorAgent:
         audits_dict: state.<...>_audits 引用，重审通过会覆盖该 chapter_index 的条目
         label: 仅用于"输出过短"日志（"polish" / "reader-revise" / "dialogue-revise"）
         """
-        from state import count_chapter_words
+        from persistence.state import count_chapter_words
         if not (new_text and len(new_text) >= int(0.7 * len(original_text))):
             print(f"  ⚠ {label} 输出过短 ({len(new_text)}/{len(original_text)})，保留原稿")
             return None, original_text
@@ -375,7 +375,7 @@ class DirectorAgent:
         group_id:   "G0_intent"/"G1_world"/"G2_characters"/"G3_plot"/"G4_framework_ready"
         group_name: 展示给用户看的中文
         """
-        import project_manager
+        from project_mgmt import project_manager
         try:
             mode = project_manager.get_mode(project_context.current())
         except Exception:
@@ -391,7 +391,7 @@ class DirectorAgent:
             # 本组有 phase 没成功——逐个诊断 + 写 error warning + **强制 mark_done 以避免下次循环**。
             # 设计意图：让用户能继续往下推（不阻塞），但 stdout 和前端 warning 都给出
             # 具体根因（哪个字段空、当前数量、期望数量），用中文模块名（与左边大纲一致）。
-            from checkpoint import add_progress_warning, mark_phase_done
+            from persistence.checkpoint import add_progress_warning, mark_phase_done
             sorted_missing = sorted(missing)
             print(f"\n  ⚠ 阶段组《{group_name}》缺 {len(missing)} 个模块：{_phase_labels_join(sorted_missing)}")
             print(f"  ── 失败诊断 ───────────────────────")
@@ -443,7 +443,7 @@ class DirectorAgent:
         )
         # 单独写一条 group_just_completed 到 progress_status.json
         try:
-            from director import _update_progress_status  # 内部函数
+            from core.director import _update_progress_status  # 内部函数
             _update_progress_status(group_just_completed=group_id)
         except Exception:
             pass
@@ -505,7 +505,7 @@ class DirectorAgent:
             else:
                 dropped.append(pid)
         if dropped:
-            from checkpoint import _save_progress, add_progress_warning
+            from persistence.checkpoint import _save_progress, add_progress_warning
             progress["phases"] = kept
             _save_progress(progress)
             self._progress = progress
@@ -555,7 +555,7 @@ class DirectorAgent:
         这样每个 phase 组边界的 checkpoint 才能在正确位置触发。
         """
         # stepwise 模式：不跑调度器，让下面的顺序块一个个跑
-        import project_manager
+        from project_mgmt import project_manager
         try:
             _mode = project_manager.get_mode(project_context.current())
         except Exception:
@@ -564,8 +564,8 @@ class DirectorAgent:
             print("  [stepwise] 跳过并发调度器，用顺序模式（允许组间暂停）")
             return
 
-        from scheduler import TaskScheduler
-        from scheduler_tasks import ALL_TASKS
+        from core.scheduler import TaskScheduler
+        from core.scheduler_tasks import ALL_TASKS
         from config import PARALLEL_WORKERS
 
         sched = TaskScheduler(ALL_TASKS)
@@ -635,7 +635,7 @@ class DirectorAgent:
 
         # ── 状态审计：用户要求"如果有地方没有生成，显示问题，不要盲目运行" ──
         try:
-            from state_audit import print_state_audit
+            from persistence.state_audit import print_state_audit
             print_state_audit(self.state)
         except Exception as e:
             print(f"  ⚠ 状态审计失败（不影响主流程）：{type(e).__name__}: {e}")
@@ -799,7 +799,7 @@ class DirectorAgent:
                 # 阻塞会让 stepwise 死循环（每次进 G2 都因 1E 不通过而触发暂停）
                 print(f"  ⚠ 世界观仍有 {len(gaps)} 处提示性缺失（非阻塞，已留 warning）：{gaps[:3]}")
                 try:
-                    from checkpoint import add_progress_warning
+                    from persistence.checkpoint import add_progress_warning
                     add_progress_warning(
                         level="warn",
                         source="phase:1E",
@@ -989,7 +989,7 @@ class DirectorAgent:
         if not is_phase_done("3E3", p):
             _section("Phase 3-E3: 反转系统设计（先于伏笔——每层 clues 给伏笔阶段铺路）")
             from agents.twist_designer import design_twists
-            from state import TwistSystem as _TwistSystem
+            from persistence.state import TwistSystem as _TwistSystem
             design_twists(self.state)
             if self.state.twist_system and self.state.twist_system.chains:
                 try:
@@ -1078,7 +1078,7 @@ class DirectorAgent:
         self._stepwise_checkpoint("G5_framework_ready", "框架就绪（主框架完成，即将进入章节写作）")
 
         # stepwise 模式下还要拦截章节循环——不自动写章，等用户逐章触发
-        import project_manager as _pm
+        from project_mgmt import project_manager as _pm
         if _pm.get_mode(project_context.current()) == "stepwise":
             print("\n✓ [stepwise] 框架全部规划完成。")
             print("  章节写作请去 web UI 的「写下一章」卡片，逐章触发。")
@@ -1435,8 +1435,8 @@ class DirectorAgent:
 
     def _revise_chapters_with_feedback(self, chapter_to_feedback: dict, volume_index: int):
         """对一组章节注入反馈并重写——清进度/清正文/清派生状态后调用 _write_one_chapter。"""
-        from chapter_cleanup import cleanup_chapter_state
-        from checkpoint import _save_progress, load_progress
+        from persistence.chapter_cleanup import cleanup_chapter_state
+        from persistence.checkpoint import _save_progress, load_progress
 
         if not chapter_to_feedback:
             return
@@ -1468,7 +1468,7 @@ class DirectorAgent:
     def _save_meta_safely(self):
         """便捷封装：增量保存 meta（stage/volume review 报告写入）。失败不抛。"""
         try:
-            from checkpoint import save_state_section
+            from persistence.checkpoint import save_state_section
             save_state_section(self.state, "meta")
         except Exception as e:
             print(f"  ⚠ 保存审查报告失败：{type(e).__name__}: {e}")
@@ -1710,7 +1710,7 @@ class DirectorAgent:
             print(f"    审核评语：{review_result['reviewer_note'][:60]}")
         # critical 问题写到 progress warning，让用户能在 web UI 看到（不阻塞写盘）
         if critical_issues:
-            from checkpoint import add_progress_warning
+            from persistence.checkpoint import add_progress_warning
             preview = "；".join(
                 f"{i.get('category','?')}: {i.get('description','')[:40]}"
                 for i in critical_issues[:3]
@@ -1858,7 +1858,7 @@ class DirectorAgent:
                     with open(path, "w", encoding="utf-8") as fpw:
                         fpw.write(new_text)
                     final = new_text
-                    from state import count_chapter_words
+                    from persistence.state import count_chapter_words
                     sm = next((c for c in self.state.completed_chapters if c.index == chapter_index), None)
                     if sm: sm.word_count = count_chapter_words(new_text)
                     new_canon = check_canon(self.state, chapter_index, new_text)
@@ -1899,7 +1899,7 @@ class DirectorAgent:
                     final = sens_report2["final_content"]
                     with open(path, "w", encoding="utf-8") as fpw:
                         fpw.write(final)
-                    from state import count_chapter_words
+                    from persistence.state import count_chapter_words
                     sm = next((c for c in self.state.completed_chapters if c.index == chapter_index), None)
                     if sm: sm.word_count = count_chapter_words(final)
                     print(f"  [sensitive-revise] 修订后剩余 {sens_report2.get('total_remaining', 0)} 处（前 {sens_report.get('total_remaining', 0)}）")
@@ -1943,7 +1943,7 @@ class DirectorAgent:
 
         # 主角实力章级日志（下章 writer 知道主角"此刻"能调什么、近期是否升级）
         try:
-            from state import CharacterRole
+            from persistence.state import CharacterRole
             proto = next((c for c in self.state.characters if c.role == CharacterRole.PROTAGONIST), None)
             if proto:
                 snap = self.state.latest_state_snapshot(proto.name) if hasattr(self.state, "latest_state_snapshot") else None
@@ -1991,7 +1991,7 @@ class DirectorAgent:
                     if serious_count > 0:
                         try:
                             from agents.chapter_polisher import build_polish_messages
-                            from llm import chat as _chat
+                            from llm_layer.llm import chat as _chat
                             msgs = build_polish_messages(self.state, chapter_index, final, audit)
                             if msgs:
                                 self._set_current_step(
@@ -2439,7 +2439,7 @@ class DirectorAgent:
   "emotional_note": "本章情绪基调（20字）"
 }}
 """
-        from json_utils import request_json
+        from utils.json_utils import request_json
         try:
             data = request_json(
                 system=DIRECTOR_SYSTEM, user=prompt,

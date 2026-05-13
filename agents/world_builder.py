@@ -3,9 +3,9 @@ WorldBuilderAgent — 构建世界观文本（地理/历史/文化/经济/禁忌
 仅负责世界设定，人物由 CharacterDesignerAgent 负责。
 """
 import json
-from json_utils import repair_json, safe_parse, request_json
-from llm import system_user
-from state import NovelState
+from utils.json_utils import repair_json, safe_parse, request_json
+from llm_layer.llm import system_user
+from persistence.state import NovelState
 from config import NUM_VOLUMES
 from agents.concept_pitch import format_world_context_brief
 

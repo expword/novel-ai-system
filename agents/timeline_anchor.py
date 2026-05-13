@@ -7,8 +7,8 @@ TimelineAnchorAgent — Phase 1-G：世界历史时间轴。
 
 产出 state.timeline：6-12 个历史事件，从上古到当代，标注距今年数、涉及势力、可作为伏笔的角度。
 """
-from json_utils import request_json, pick_list
-from state import NovelState, Timeline, TimelineEvent
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, Timeline, TimelineEvent
 from agents.concept_pitch import format_concept_brief, format_world_context_brief
 
 

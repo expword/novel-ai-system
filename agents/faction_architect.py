@@ -19,9 +19,9 @@ FactionArchitectAgent — 自适应的势力/组织体系设计。
 这个 agent 根据 power_flow / genre 判断势力结构的"颗粒度"和"类型"，不硬套五层修真体系。
 """
 import json
-from json_utils import repair_json, request_json, pick_list
-from llm import system_user
-from state import NovelState, Faction, FactionRelation, FactionInfiltration
+from utils.json_utils import repair_json, request_json, pick_list
+from llm_layer.llm import system_user
+from persistence.state import NovelState, Faction, FactionRelation, FactionInfiltration
 from config import (
     NUM_VOLUMES,
     FACTION_TIERS_MIN, FACTION_TIERS_MAX,
@@ -132,7 +132,7 @@ def _design_tier_framework(
       B. 并发 N 次 LLM：每层单独生成该层的 4-6 个势力（名字+类型+power_level+brief）
     这样避免一次要 LLM 吐 30 个势力导致 JSON 截断。
     """
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
     from config import PARALLEL_WORKERS
 
     world_ctx = format_world_context_brief(state)

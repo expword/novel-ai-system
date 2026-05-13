@@ -3,10 +3,10 @@ CriticAgent — 审校4维：叙事线完成度/张力匹配/节奏一致性/钩
 额外检查：角色说话风格/爽点是否到位/伏笔是否正确植入兑现。
 """
 import json
-from json_utils import repair_json, safe_parse, request_json
-from llm import system_user
-from state import NovelState, ChapterDirective
-from context_manager import build_critic_context
+from utils.json_utils import repair_json, safe_parse, request_json
+from llm_layer.llm import system_user
+from persistence.state import NovelState, ChapterDirective
+from utils.context_manager import build_critic_context
 from agents.concept_pitch import format_tone_brief
 
 

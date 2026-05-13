@@ -3,9 +3,9 @@ LinePlannerAgent — 规划全局叙事线（贯穿全书）+ 每卷专属叙事
 全局线一次性全部规划；卷内线在该卷开始前规划。
 """
 import json
-from json_utils import repair_json, safe_parse, pick_list, request_json
-from llm import system_user
-from state import (
+from utils.json_utils import repair_json, safe_parse, pick_list, request_json
+from llm_layer.llm import system_user
+from persistence.state import (
     NovelState, NarrativeLine, LinePhase, LineType, LineScope, TensionLevel
 )
 from config import (
@@ -249,7 +249,7 @@ def plan_all_volume_lines_parallel(state: NovelState) -> None:
     ):
         return
     from config import NUM_VOLUMES, PARALLEL_WORKERS
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
 
     vol_indexes = [vi for vi in range(1, NUM_VOLUMES + 1) if state.get_volume(vi)]
     if not vol_indexes:

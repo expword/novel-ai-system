@@ -11,9 +11,9 @@ ProtagonistJourneyAgent — 主角历程三层规划。
 - 主角的每一步都服务于整体弧线
 - 同一卷内不同舞台有连贯的情感线索
 """
-from json_utils import repair_json, request_json, pick_list
-from llm import system_user
-from state import (
+from utils.json_utils import repair_json, request_json, pick_list
+from llm_layer.llm import system_user
+from persistence.state import (
     NovelState, ProtagonistJourney, ProtagonistMilestone, ProtagonistStageBeat,
 )
 from config import NUM_VOLUMES
@@ -390,7 +390,7 @@ def _step2_volume_milestones(state: NovelState) -> None:
         if added > 0:
             print(f"  ⚠ {added}/{expected} 卷的里程碑由 LLM 产出（缺失），其余用兜底骨架填充——下游写章质量会受影响")
             try:
-                from checkpoint import add_progress_warning
+                from persistence.checkpoint import add_progress_warning
                 add_progress_warning(
                     level="error",
                     source="phase:3G",

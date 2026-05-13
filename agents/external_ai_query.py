@@ -28,7 +28,7 @@ def query_real_ai(profile_id: str, question: str, *, max_tokens: int = 2000,
     返回 LLM 的 content；失败时 raise RuntimeError。
     """
     from openai import OpenAI
-    import user_models as _um
+    from llm_layer import user_models as _um
     entry = _um.get(profile_id, include_key=True)
     if not entry:
         raise RuntimeError(f"profile_id={profile_id!r} 不在 user_models.json，无法发外部 AI 问询")

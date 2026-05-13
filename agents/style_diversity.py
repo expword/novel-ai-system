@@ -12,7 +12,7 @@ forbidden_content 注入 writer prompt。
 """
 from __future__ import annotations
 import re
-from state import NovelState
+from persistence.state import NovelState
 
 
 _METAPHOR_PATTERNS = [

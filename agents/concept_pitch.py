@@ -13,8 +13,8 @@ ConceptPitchAgent — Phase 0：创作立项层。
 如果用户在 config.py 里给了种子（TARGET_AUDIENCE/CORE_SELLING_POINTS_SEEDS 等），
 LLM 必须严格遵守这些偏好；否则让 LLM 根据题材/主题自行推断。
 """
-from json_utils import request_json, pick_list
-from state import NovelState, ConceptPitch, TropeLibrary, ToneManual
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, ConceptPitch, TropeLibrary, ToneManual
 from config import (
     NUM_VOLUMES, WORDS_PER_CHAPTER, CHAPTERS_PER_VOLUME_MIN, CHAPTERS_PER_VOLUME_MAX,
     TARGET_AUDIENCE, TARGET_PLATFORM, CORE_SELLING_POINTS_SEEDS,

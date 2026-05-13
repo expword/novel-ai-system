@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
-import project_context as pctx
+from project_mgmt import project_context as pctx
 
 
 # 每个 project_id 一个 Lock——放内存里（Flask 单进程 dev server 够用）

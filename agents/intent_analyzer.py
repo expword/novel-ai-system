@@ -13,8 +13,8 @@ IntentAnalyzerAgent —— Phase -1：分析作者意图。
 只做一件事：把"人话"变成"字段"。
 """
 from datetime import datetime
-from json_utils import request_json
-from state import NovelState, CreativeIntent, IntentRevision
+from utils.json_utils import request_json
+from persistence.state import NovelState, CreativeIntent, IntentRevision
 
 
 SYSTEM = """你是小说策划咨询师。作者告诉你他想写什么，你要把这段自由发挥的话解析成结构化的立项信号。

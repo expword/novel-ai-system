@@ -8,8 +8,8 @@ GlossaryManager —— 术语表管理。
 写阶段：Memory 之后扫一遍，新词入库，旧词别名合并。
 """
 from __future__ import annotations
-from json_utils import request_json, pick_list
-from state import NovelState, GlossaryEntry
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, GlossaryEntry
 
 
 SYSTEM = """你是小说术语登记员。

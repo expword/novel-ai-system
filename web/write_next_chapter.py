@@ -33,11 +33,11 @@ def write_one_chapter(project_id: str, chapter_index: int = 0) -> dict:
     写一章。chapter_index=0 表示自动找下一章。
     返回 {"status", "chapter_index", "word_count", "volume_index"}
     """
-    import project_context
+    from project_mgmt import project_context
     project_context.set_project(project_id)
 
-    from checkpoint import load_state, load_progress
-    import version_control
+    from persistence.checkpoint import load_state, load_progress
+    from persistence import version_control
 
     state = load_state()
     if state is None:
@@ -83,7 +83,7 @@ def write_one_chapter(project_id: str, chapter_index: int = 0) -> dict:
     )
 
     # 5. 实例化 director 并写本章
-    from director import DirectorAgent
+    from core.director import DirectorAgent
     agent = DirectorAgent(resume=True)
     agent.state.current_volume_index = vol.index
     agent.state.current_chapter_index = chapter_index
@@ -106,7 +106,7 @@ def write_one_chapter(project_id: str, chapter_index: int = 0) -> dict:
             pass
 
     # 6. 读回字数（中文小说标准——汉字+英文word+数字，不含标点空格）
-    from state import count_chapter_words
+    from persistence.state import count_chapter_words
     path = f"{vol_dir}/chapter_{chapter_index:04d}.txt"
     word_count = 0
     if os.path.exists(path):

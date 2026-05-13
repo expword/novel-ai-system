@@ -25,8 +25,8 @@ AbilityRoadmapPlanner —— 金手指/能力/物品/技能/法宝的"生命周�
 from __future__ import annotations
 from typing import Optional
 
-from json_utils import request_json
-from state import (
+from utils.json_utils import request_json
+from persistence.state import (
     NovelState,
     SpecialAbility,
     LifecycleNode,
@@ -177,7 +177,7 @@ def _design_asset_list(state: NovelState) -> list[dict]:
 def _available_llm_profiles_hint() -> str:
     """列出 user_models.json 里所有 profile 的 id + display_name，给 LLM 选哪个绑。"""
     try:
-        import user_models as um
+        from llm_layer import user_models as um
         items = um.list_all() or []
     except Exception:
         return "（user_models 未加载，留 external_llm_profile 为空即可）"

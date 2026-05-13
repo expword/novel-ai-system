@@ -9,9 +9,9 @@ VolumePlannerAgent — 规划所有卷的结构（主题/弧线/关键事件/卷
 """
 import json
 from typing import Optional
-from json_utils import repair_json, safe_parse, pick_list, request_json
-from llm import system_user
-from state import NovelState, Volume, BookStructurePlan
+from utils.json_utils import repair_json, safe_parse, pick_list, request_json
+from llm_layer.llm import system_user
+from persistence.state import NovelState, Volume, BookStructurePlan
 from config import NUM_VOLUMES, CHAPTERS_PER_VOLUME_MIN, CHAPTERS_PER_VOLUME_MAX
 from agents.concept_pitch import format_concept_brief
 
@@ -383,7 +383,7 @@ def plan_all_volumes_dispatched(state: NovelState) -> None:
       1. plan_book_structure_only(state)  — 1 次 LLM 只定分段
       2. parallel_map(每卷)               — N 次 LLM 并发填详情
     """
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
     from config import PARALLEL_WORKERS
 
     if not state.master_outline.generated:

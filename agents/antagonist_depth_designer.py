@@ -16,7 +16,7 @@
 from __future__ import annotations
 from typing import Optional
 
-from state import NovelState
+from persistence.state import NovelState
 
 
 SYSTEM_TEMPLATE = """你是{genre}小说的反派塑造专家。以下网文金句你深以为然：
@@ -113,7 +113,7 @@ def design_antagonist_depth(state: NovelState, *, max_retries: int = 2) -> dict:
     if not villains:
         return {"updated": 0, "errors": ["no villains found"]}
 
-    from json_utils import request_json
+    from utils.json_utils import request_json
 
     # 构造输入
     villain_brief = []

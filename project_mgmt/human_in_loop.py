@@ -21,10 +21,10 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from state import NovelState, PendingApproval
+from persistence.state import NovelState, PendingApproval
 
 
-import project_context as _pctx
+from project_mgmt import project_context as _pctx
 APPROVAL_DIR = _pctx.approval_dir()
 
 

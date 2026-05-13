@@ -107,7 +107,7 @@ def request_json(
       empty_ok             True=允许返回空 dict 作为"跳过"信号；False=失败时抛错
       example_schema       可选，最后一轮兜底时贴给 LLM 作为参考的最小合法 JSON 示例
     """
-    from llm import system_user
+    from llm_layer.llm import system_user
 
     last_err = ""
     last_raw = ""
@@ -198,7 +198,7 @@ def request_json_with_profile(
       - 走 llm.chat_with_profile（用指定 profile_id + 独立 API key）
       - 默认 empty_ok=True, max_retries=3（审核失败不该阻断主流程）
     """
-    from llm import chat_with_profile
+    from llm_layer.llm import chat_with_profile
 
     last_err = ""
     last_raw = ""
@@ -360,7 +360,7 @@ def run_chapter_audit(
     if not data:
         return None
     from datetime import datetime
-    from llm_runtime import resolve_profile
+    from llm_layer.llm_runtime import resolve_profile
     try:
         profile_id = resolve_profile().get("id", "")
     except Exception:

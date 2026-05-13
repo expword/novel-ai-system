@@ -289,7 +289,7 @@ def _build_default_pool() -> LLMPool:
     # metrics 文件——按当前项目走（每项目独立 metrics.jsonl）
     metrics_file = None
     try:
-        import project_context as pctx
+        from project_mgmt import project_context as pctx
         metrics_file = os.path.join(pctx.control_dir(), "llm_metrics.jsonl")
     except Exception:
         pass

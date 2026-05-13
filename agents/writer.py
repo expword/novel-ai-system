@@ -1,9 +1,9 @@
 """
 WriterAgent — 写章节正文，感知张力/节奏/爽点/伏笔/级别/势力全套系统（按本书题材自适应）。
 """
-from llm import system_user
-from state import NovelState, ChapterDirective, TensionLevel, RhythmType
-from context_manager import build_writer_context, ContextBuilder, CRITICAL, HIGH, MEDIUM
+from llm_layer.llm import system_user
+from persistence.state import NovelState, ChapterDirective, TensionLevel, RhythmType
+from utils.context_manager import build_writer_context, ContextBuilder, CRITICAL, HIGH, MEDIUM
 from agents.rhythm_designer import get_rhythm_instruction
 from agents.concept_pitch import format_tone_brief, format_concept_brief
 
@@ -74,7 +74,7 @@ def write_chapter(state: NovelState, directive: ChapterDirective, target_words: 
         draft = _write_by_scenes(state, directive, target_words, prev_tail)
 
     # 字数兜底：不够就扩写——按【中文小说字数】判定（汉字+英文word+数字），不是 len(字符数)
-    from state import count_chapter_words as _cw
+    from persistence.state import count_chapter_words as _cw
     min_needed = int(target_words * MIN_FILL_RATIO)
     cur_wc = _cw(draft)
     attempts = 0
@@ -420,7 +420,7 @@ def _expand_to_target(state: NovelState, directive: ChapterDirective,
     扩写 pass：初稿字数不够时调用。
     只补细腻/内心/感官/铺陈，严禁动剧情/改结构。
     """
-    from state import count_chapter_words as _cw
+    from persistence.state import count_chapter_words as _cw
     tone_block = format_tone_brief(state)
     cur_wc = _cw(draft)
     shortage = max(target_words - cur_wc, target_words // 4)  # 至少要求补四分之一目标，避免 LLM 觉得"差不多就行"

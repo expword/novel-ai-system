@@ -19,8 +19,8 @@ TwistDesignerAgent —— 反转设计师。
   · brain_burning  ：3 层反转（两次打脸读者）
   · mind_bending   ：4 层反转（终极烧脑）
 """
-from json_utils import request_json, pick_list
-from state import (
+from utils.json_utils import request_json, pick_list
+from persistence.state import (
     NovelState, TwistSystem, TwistChain, TwistLayer,
 )
 from agents.concept_pitch import format_world_context_brief
@@ -55,7 +55,7 @@ def design_twists(state: NovelState) -> None:
     生成完整反转系统，写入 state.twist_system。
     两步：先脑暴反转链种子，再并发展开每条链的层。
     """
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
     from agents import require_upstream
     if not require_upstream(state, "TwistDesigner",
         volumes=lambda s: bool(s.volumes),

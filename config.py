@@ -110,7 +110,7 @@ LLM_CB_COOLDOWN_SEC = 30.0        # 熔断冷却时间
 
 # ── 输出 ──────────────────────────────────────────
 # 由 project_context 动态填入（支持多项目）
-import project_context as _pctx
+from project_mgmt import project_context as _pctx
 OUTPUT_DIR = _pctx.project_dir()
 PLANS_DIR = _pctx.plans_dir()
 

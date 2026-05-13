@@ -11,9 +11,9 @@ ThreadTrackerAgent — 每章写完后提取精确的故事状态，作为下章
   ThreadTracker 的任务是追踪所有这些层次，
   让下章的 ChapterPlanner 知道该把哪些线索交叉编织进来。
 """
-from json_utils import repair_json, request_json
-from llm import system_user
-from state import NovelState, StoryThread, OpenLoop
+from utils.json_utils import repair_json, request_json
+from llm_layer.llm import system_user
+from persistence.state import NovelState, StoryThread, OpenLoop
 
 
 SYSTEM = """你是小说连续性分析师，专门追踪多线并行的故事状态。

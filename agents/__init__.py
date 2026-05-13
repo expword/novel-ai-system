@@ -16,8 +16,8 @@ Agents 包入口。
 from __future__ import annotations
 from typing import Callable
 
-from state import NovelState
-import checkpoint as _ckpt
+from persistence.state import NovelState
+from persistence import checkpoint as _ckpt
 
 
 def require_upstream(state: NovelState, agent_name: str, **specs: Callable[[NovelState], bool]) -> bool:

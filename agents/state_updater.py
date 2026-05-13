@@ -12,8 +12,8 @@ memory.process_chapter 之后跑，统一做五件事：
 
 让 Writer 下一章开始时能从 state 精确读取"此刻的硬事实"，不靠猜。
 """
-from json_utils import request_json, pick_list
-from state import NovelState, CharacterStateSnapshot, WorldEvent, CharacterRole
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, CharacterStateSnapshot, WorldEvent, CharacterRole
 
 
 SYSTEM = """你是小说状态管理员。你不评价文学质量，你只干一件事：

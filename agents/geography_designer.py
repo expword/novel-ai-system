@@ -29,8 +29,8 @@ GeographyDesignerAgent — Phase 1-F：自适应地理设计。
   · 星际：飞船/跃迁引擎/虫洞/传送阵
   · 武侠：步行/骑马/轻功/快马/船只
 """
-from json_utils import request_json, pick_list
-from state import NovelState, Geography, GeoRegion, TransportMode, TravelDistance, RouteStage
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, Geography, GeoRegion, TransportMode, TravelDistance, RouteStage
 from agents.concept_pitch import format_concept_brief, format_world_context_brief
 from config import NUM_VOLUMES
 
@@ -63,7 +63,7 @@ def design_geography(state: NovelState) -> None:
       Step B1/B2/B3 并发 —— 按 importance 分档填充 region 详情
       Step C: distances  —— 基于骨架 region_id 生成距离矩阵 + world_map_desc
     """
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
 
     context = _build_geo_context(state)
 

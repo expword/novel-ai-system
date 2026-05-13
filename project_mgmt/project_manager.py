@@ -17,7 +17,7 @@ import subprocess
 from datetime import datetime
 from typing import Optional
 
-import project_context as pctx
+from project_mgmt import project_context as pctx
 
 
 PROJECTS_ROOT = "projects"
@@ -76,8 +76,8 @@ def _init_state(project_id: str, meta: dict):
     original = pctx.current()
     pctx.set_project(project_id)
     try:
-        from state import NovelState, CreativeIntent
-        from checkpoint import save_state
+        from persistence.state import NovelState, CreativeIntent
+        from persistence.checkpoint import save_state
         state = NovelState(
             title=meta.get("title", ""),
             genre=meta.get("genre", ""),

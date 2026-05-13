@@ -37,7 +37,7 @@ def register_promise(
     expected_fulfill_chapter: int = -1,
 ) -> str:
     """手动登记主角的承诺。返回 promise_id。"""
-    from state import Promise
+    from persistence.state import Promise
     pid = _make_promise_id(state, chapter)
     state.promises.append(Promise(
         promise_id=pid,
@@ -60,7 +60,7 @@ def mark_promise_fulfilled(state, promise_id: str, chapter: int) -> bool:
 
 def register_asset(state, asset_name: str, asset_type: str, chapter: int, notes: str = "") -> None:
     """登记一个重要物品/能力。"""
-    from state import AssetUsage
+    from persistence.state import AssetUsage
     if state.asset_usage is None:
         state.asset_usage = {}
     if asset_name not in state.asset_usage:

@@ -119,7 +119,7 @@ def _apply_paths():
     """把当前项目的路径推送给各个使用路径常量的模块。"""
     global _paths_initialized
     try:
-        import checkpoint
+        from persistence import checkpoint
         checkpoint.CHECKPOINT_DIR = checkpoint_dir()
         checkpoint.STATE_FILE = state_file()
         checkpoint.PROGRESS_FILE = progress_file()
@@ -132,12 +132,12 @@ def _apply_paths():
     except ImportError:
         pass
     try:
-        import version_control
+        from persistence import version_control
         version_control.HISTORY_DIR = history_dir()
     except ImportError:
         pass
     try:
-        import human_in_loop
+        from project_mgmt import human_in_loop
         human_in_loop.APPROVAL_DIR = approval_dir()
     except ImportError:
         pass

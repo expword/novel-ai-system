@@ -78,7 +78,7 @@ def build_fallback_chain() -> list[str]:
 
     # 1. 用户模型里 usage=main
     try:
-        import user_models
+        from llm_layer import user_models
         main_um = user_models.find_by_usage("main")
         if main_um:
             chain.append(main_um["id"])
@@ -95,7 +95,7 @@ def build_fallback_chain() -> list[str]:
         "qwen-plus",                  # 国产
     ]
     try:
-        import llm_profiles
+        from llm_layer import llm_profiles
         for pid in preferred_builtins:
             if pid in llm_profiles.PROFILES and pid not in chain:
                 chain.append(pid)

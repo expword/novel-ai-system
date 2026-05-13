@@ -7,30 +7,47 @@
 ## 三层架构
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  入口层（main.py / run_web.py / web/app.py）          │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ 入口层                                                    │
+│   · main.py                  CLI 入口                     │
+│   · run_web.py               Web 入口                     │
+│   · web/app.py               Flask REST API               │
+└──────────────────────────────────────────────────────────┘
                           ↓
-┌──────────────────────────────────────────────────────┐
-│  流程总控层（director / scheduler / project_manager）  │
-│  - 30 phase DAG 调度                                  │
-│  - 卷级 / 章级循环                                    │
-│  - HITL 关卡 + stepwise interrupt                     │
-│  - 断点恢复（mark_phase_done / save_state）           │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ 流程总控层 — core/                                        │
+│   · core/director.py         主流程 / 写章管线             │
+│   · core/scheduler.py        DAG 任务调度器                │
+│   · core/scheduler_tasks.py  30 phase 任务定义             │
+│                                                           │
+│ 项目管理 — project_mgmt/                                  │
+│   · project_context.py       当前项目路径绑定               │
+│   · project_manager.py       项目 CRUD + 子进程管理         │
+│   · human_in_loop.py         HITL 关卡                    │
+└──────────────────────────────────────────────────────────┘
                           ↓
-┌──────────────────────────────────────────────────────┐
-│  Agent 层（agents/*.py，60+ 个职能型 agent）           │
-│  每个 agent 做一件事：分析 / 设计 / 写 / 审 / 改      │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ Agent 层 — agents/ （60+ 个职能型 agent）                  │
+│   每个 agent 做一件事：分析 / 设计 / 写 / 审 / 改          │
+└──────────────────────────────────────────────────────────┘
                           ↓
-┌──────────────────────────────────────────────────────┐
-│  基础设施层                                            │
-│  - LLM 调度（llm.py / llm_pool / fallback_runner）     │
-│  - 状态持久化（state / checkpoint / state_storage）    │
-│  - 工具（json_utils / validators / invariants）        │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ 基础设施层                                                 │
+│ ── LLM 调度 llm_layer/                                    │
+│   · llm.py / llm_pool.py / llm_profiles.py /              │
+│     llm_runtime.py / user_models.py / fallback_runner.py  │
+│ ── 状态持久化 persistence/                                 │
+│   · state.py / checkpoint.py / state_storage.py /         │
+│     state_audit.py / chapter_cleanup.py /                 │
+│     entity_cleanup.py / version_control.py                │
+│ ── 工具 utils/                                            │
+│   · json_utils.py / validators.py / invariants.py /       │
+│     context_manager.py / ops_tracker.py /                 │
+│     prompts_registry.py / concurrency.py                  │
+└──────────────────────────────────────────────────────────┘
 ```
+
+> **import 约定**：所有跨包引用走完整路径（`from persistence.state import NovelState` / `from llm_layer.llm import chat` / `from utils.json_utils import request_json`）。同包内可用相对（`from .checkpoint import ...`）但项目里目前统一用绝对路径，便于 IDE 跳转。
 
 ---
 

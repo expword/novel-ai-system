@@ -17,7 +17,7 @@
 from __future__ import annotations
 from typing import Optional
 
-from state import NovelState, DialogueAudit, DialogueIssue
+from persistence.state import NovelState, DialogueAudit, DialogueIssue
 
 
 SYSTEM_TEMPLATE = """你是资深{genre}网文编辑，专审"这一章的对话够不够好"。
@@ -165,7 +165,7 @@ def audit_chapter(
     max_retries: int = 2,
 ) -> Optional[DialogueAudit]:
     """对一章做对话质量审计。失败返回 None。"""
-    from json_utils import run_chapter_audit
+    from utils.json_utils import run_chapter_audit
 
     voice_ctx = _format_character_voices(state, chapter_text)
     system = SYSTEM_TEMPLATE.format(genre=getattr(state, "genre", "") or "网文")

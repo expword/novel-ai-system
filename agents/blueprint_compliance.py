@@ -48,7 +48,7 @@ def audit_compliance(
     if not blueprint or not chapter_text:
         return None
 
-    from json_utils import request_json
+    from utils.json_utils import request_json
 
     # 拼蓝图摘要
     bp_lines = [f"章蓝图：{getattr(blueprint, 'chapter_delta', '')[:80]}"]

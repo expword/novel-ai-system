@@ -21,8 +21,8 @@ import dataclasses
 from dataclasses import asdict
 from typing import Callable, Optional
 
-from json_utils import request_json, pick_list
-from state import (
+from utils.json_utils import request_json, pick_list
+from persistence.state import (
     NovelState, Character, CharacterRole, Relationship,
     Faction, FactionRelation, FactionInfiltration,
     CharacterBond, RelationshipWeb,
@@ -151,7 +151,7 @@ def refine_world(state: NovelState, addition: str) -> bool:
 直接输出修订后的完整世界观文本（纯文本，不要 JSON 包裹）：
 """
     try:
-        from llm import system_user
+        from llm_layer.llm import system_user
         out = system_user(REFINE_SYSTEM, prompt, temperature=0.5, max_tokens=3000).strip()
         if out and len(out) > 100:
             state.world_setting = out
@@ -183,7 +183,7 @@ def refine_power_system(state: NovelState, addition: str) -> bool:
     new_mech = data.get("special_mechanics", [])
     if isinstance(new_mech, list) and new_mech:
         existing_names = {m.name for m in ps.special_mechanics}
-        from state import PowerMechanic
+        from persistence.state import PowerMechanic
         for m in new_mech:
             if isinstance(m, dict) and m.get("name") and m["name"] not in existing_names:
                 ps.special_mechanics.append(PowerMechanic(
@@ -210,7 +210,7 @@ def refine_geography(state: NovelState, addition: str) -> bool:
         return False
     geo = state.geography
     # 合并 regions
-    from state import GeoRegion, TransportMode, TravelDistance
+    from persistence.state import GeoRegion, TransportMode, TravelDistance
     existing_region_ids = {r.region_id for r in geo.regions}
     for r in data.get("regions", []):
         rid = r.get("region_id", "")
@@ -256,7 +256,7 @@ def refine_timeline(state: NovelState, addition: str) -> bool:
     )
     if not data:
         return False
-    from state import TimelineEvent
+    from persistence.state import TimelineEvent
     existing_ids = {e.event_id for e in state.timeline.events}
     for e in data.get("events", []):
         eid = e.get("event_id", "")
@@ -288,7 +288,7 @@ def refine_economy(state: NovelState, addition: str) -> bool:
     eco = state.economy
     if data.get("trade_notes"):
         eco.trade_notes = data["trade_notes"]
-    from state import Currency, PriceAnchor
+    from persistence.state import Currency, PriceAnchor
     existing_ccy = {c.name for c in eco.currencies}
     for c in data.get("currencies", []):
         if c.get("name") and c["name"] not in existing_ccy:

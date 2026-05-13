@@ -22,8 +22,8 @@ MasterDispatcher —— Phase 0.5：中央调度器。
   本调用的输出**必须简洁**——每个字段都是"种子"而非"细节"，
   让下游 agent 有分批并发填充的空间。
 """
-from json_utils import request_json, pick_list
-from state import (
+from utils.json_utils import request_json, pick_list
+from persistence.state import (
     NovelState, MasterOutline, CharacterSlot, FactionSkeletonItem, PlotSetpiece,
     NarrativeFunction,
 )
@@ -77,7 +77,7 @@ def dispatch_master_outline(state: NovelState) -> None:
     并发化：B 和 C 都只依赖 A，可以并发。
     这样每次 LLM 调用的输出都控制在 <2500 字以内，大幅减少截断风险。
     """
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
 
     context = _build_context(state)
 

@@ -17,7 +17,7 @@ import os
 import json
 from typing import Optional
 
-import llm_profiles
+from llm_layer import llm_profiles
 
 
 def _profile_id_exists(pid: str) -> bool:
@@ -25,7 +25,7 @@ def _profile_id_exists(pid: str) -> bool:
     if pid in llm_profiles.PROFILES:
         return True
     try:
-        import user_models
+        from llm_layer import user_models
         return user_models.get(pid, include_key=False) is not None
     except Exception:
         return False
@@ -35,7 +35,7 @@ def _lookup_profile(pid: str) -> Optional[dict]:
     """按 pid 查出 profile 字典——user_models 优先，再查内置 PROFILES。"""
     # 1. 用户模型优先（确保 API key 正确携带）
     try:
-        import user_models
+        from llm_layer import user_models
         um = user_models.get(pid, include_key=True)
         if um:
             return user_models.to_profile_dict(um)
@@ -61,7 +61,7 @@ def resolve_profile_id() -> str:
     """返回当前 profile id。"""
     # 1. 项目 meta
     try:
-        import project_context
+        from project_mgmt import project_context
         meta_path = project_context.meta_file()
         if os.path.exists(meta_path):
             with open(meta_path, encoding="utf-8") as f:
@@ -77,7 +77,7 @@ def resolve_profile_id() -> str:
         return env_pid
     # 3. user_models 里 usage="main" 的第一条
     try:
-        import user_models
+        from llm_layer import user_models
         main_um = user_models.find_by_usage("main")
         if main_um:
             return main_um["id"]
@@ -113,7 +113,7 @@ def set_project_profile(project_id: str, profile_id: str) -> dict:
     """
     if not _profile_id_exists(profile_id):
         raise ValueError(f"未知 profile：{profile_id}（既不在内置目录也不在用户模型里）")
-    import project_context
+    from project_mgmt import project_context
     orig = project_context.current()
     try:
         project_context.set_project(project_id)
@@ -134,7 +134,7 @@ def set_project_profile(project_id: str, profile_id: str) -> dict:
 
 def get_project_profile_id(project_id: str) -> str:
     """查某项目当前用的 profile id（可能是内置或用户模型）。"""
-    import project_context
+    from project_mgmt import project_context
     meta_path = project_context.meta_file(project_id)
     if os.path.exists(meta_path):
         try:

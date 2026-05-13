@@ -24,9 +24,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from json_utils import request_json
-from state import NovelState
-import checkpoint as _ckpt
+from utils.json_utils import request_json
+from persistence.state import NovelState
+from persistence import checkpoint as _ckpt
 
 
 @dataclass

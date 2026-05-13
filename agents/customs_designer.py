@@ -15,7 +15,7 @@
 from __future__ import annotations
 from typing import Optional
 
-from state import (
+from persistence.state import (
     NovelState, AtmosphereLibrary, AtmosphereScope,
     AtmosphereFragment, CulturalCustom,
 )
@@ -132,7 +132,7 @@ def design_atmosphere(
     max_retries: int = 2,
 ) -> Optional[AtmosphereScope]:
     """为单个 scope 生成氛围库。失败返回 None。"""
-    from json_utils import request_json
+    from utils.json_utils import request_json
 
     system = SYSTEM_TEMPLATE.format(genre=getattr(state, "genre", "") or "")
     user = (

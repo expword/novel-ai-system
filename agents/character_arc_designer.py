@@ -9,9 +9,9 @@ CharacterArc 管"这些事让他内心怎么变了"（人物心理线）。
 
 每人一次 LLM 调用（5-9 人），生成后写入 state.character_arcs。
 """
-from json_utils import request_json, pick_list
-from state import NovelState, CharacterArc, ArcTransition, CharacterRole
-from concurrency import parallel_map
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, CharacterArc, ArcTransition, CharacterRole
+from utils.concurrency import parallel_map
 from config import PARALLEL_WORKERS
 
 

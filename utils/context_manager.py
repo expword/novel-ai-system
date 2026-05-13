@@ -17,7 +17,7 @@ ContextManager — 上下文预算管理系统。
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
-from state import NovelState, NarrativeLine, Character, ChapterDirective
+from persistence.state import NovelState, NarrativeLine, Character, ChapterDirective
 
 
 # ── 优先级常量 ────────────────────────────────────────
@@ -507,7 +507,7 @@ def _get_faction_brief_for_volume(state: NovelState, volume_index: int, max_char
 
 def _get_pending_foreshadow_titles(state: NovelState, max_items: int = 4) -> str:
     """只列出已植入且未兑现的主线伏笔标题，不含详情。"""
-    from state import ForeshadowImportance
+    from persistence.state import ForeshadowImportance
     pending = [
         fw for fw in state.foreshadow_items
         if not fw.resolved and fw.planted_chapter > 0
@@ -603,7 +603,7 @@ def _build_protagonist_power_panel(state: NovelState, directive, max_chars: int 
       · directive.character_states 里本章对手的 realm
       · state.power_system.power_ratio_table（如果有）
     """
-    from state import CharacterRole
+    from persistence.state import CharacterRole
     proto = next((c for c in state.characters if c.role == CharacterRole.PROTAGONIST), None)
     if not proto:
         return ""

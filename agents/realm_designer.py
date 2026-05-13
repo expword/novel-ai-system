@@ -17,9 +17,9 @@ RealmDesignerAgent — 自适应的"成长阶梯"设计器。
 3. 【特殊能力/机遇】仅当 system_type 支持超自然元素时才生成（realms/skill_tiers）；社会向题材可能根本没有"能力"概念。
 """
 import json
-from json_utils import repair_json, safe_parse, pick_list, request_json
-from llm import system_user
-from state import NovelState, PowerSystem, Realm, SpecialAbility, AbilityAwakeningStage, PowerMechanic
+from utils.json_utils import repair_json, safe_parse, pick_list, request_json
+from llm_layer.llm import system_user
+from persistence.state import NovelState, PowerSystem, Realm, SpecialAbility, AbilityAwakeningStage, PowerMechanic
 from config import NUM_VOLUMES
 
 

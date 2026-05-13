@@ -20,11 +20,11 @@ def rewrite_chapter(project_id: str, chapter_index: int,
     重写一章。同步执行（阻塞直到写完）。
     返回 {"status": "ok", "chapter_index": ..., "word_count": ...}
     """
-    import project_context
+    from project_mgmt import project_context
     project_context.set_project(project_id)
 
-    from checkpoint import load_state, save_state, load_progress, _save_progress
-    import version_control
+    from persistence.checkpoint import load_state, save_state, load_progress, _save_progress
+    from persistence import version_control
 
     state = load_state()
     if state is None:
@@ -61,13 +61,13 @@ def rewrite_chapter(project_id: str, chapter_index: int,
 
     # 5. 清理按章派生状态（memory / 快照 / 世界事件 / 爽点触发 / 伏笔回收 等）
     #    不清会导致旧稿的记忆和状态污染新稿
-    from chapter_cleanup import cleanup_chapter_state
+    from persistence.chapter_cleanup import cleanup_chapter_state
     cleanup_chapter_state(state, {chapter_index})
 
     save_state(state)
 
     # 6. 实例化 director，写本章
-    from director import DirectorAgent
+    from core.director import DirectorAgent
     agent = DirectorAgent(resume=True)
     # 把作者反馈临时挂到 state 上，director 的 _generate_directive
     # 会把它写进 directive.user_feedback
@@ -93,7 +93,7 @@ def rewrite_chapter(project_id: str, chapter_index: int,
             pass
 
     # 读回字数（中文小说标准——汉字+英文word+数字，不含标点空格）
-    from state import count_chapter_words
+    from persistence.state import count_chapter_words
     word_count = 0
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:

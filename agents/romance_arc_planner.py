@@ -47,7 +47,7 @@ def register_arc(
     planned_beats: Optional[list] = None,
 ) -> str:
     """登记一条感情线。"""
-    from state import RomanceArc
+    from persistence.state import RomanceArc
     aid = _make_arc_id(state, char_a, char_b)
     # 已存在就更新
     existing = next((a for a in (state.romance_arcs or []) if a.relationship_id == aid), None)

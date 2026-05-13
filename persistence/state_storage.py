@@ -33,7 +33,7 @@ import threading
 from dataclasses import asdict
 from typing import Any, Optional
 
-from state import NovelState
+from persistence.state import NovelState
 
 
 # ═══════════════════════════════════════════════════════
@@ -65,7 +65,7 @@ def _init_spec() -> dict:
     global _SECTION_SPEC
     if _SECTION_SPEC is not None:
         return _SECTION_SPEC
-    import checkpoint as ck
+    from persistence import checkpoint as ck
 
     # 每个 section: (state_attr, kind, loader, default_factory)
     spec = {
@@ -116,7 +116,7 @@ def _init_spec() -> dict:
 # ─── 辅助：特殊 section 的 loader ───────────────────
 
 def _load_power_system_maybe_none(d: dict):
-    import checkpoint as ck
+    from persistence import checkpoint as ck
     if not d:
         return None
     return ck._load_power_system(d)
@@ -124,8 +124,8 @@ def _load_power_system_maybe_none(d: dict):
 
 def _load_memory(d: dict):
     """Memory 是 {entries, facts, character_states} 三段."""
-    from state import MemoryBank
-    import checkpoint as ck
+    from persistence.state import MemoryBank
+    from persistence import checkpoint as ck
     return MemoryBank(
         entries=[ck._load_memory_entry(e) for e in d.get("entries", [])],
         facts=d.get("facts", []),
@@ -135,7 +135,7 @@ def _load_memory(d: dict):
 
 def _load_atmosphere_library(d: dict):
     """AtmosphereLibrary { scopes: [{scope_type, scope_key, label, fragments, customs}] }"""
-    from state import AtmosphereLibrary, AtmosphereScope, AtmosphereFragment, CulturalCustom
+    from persistence.state import AtmosphereLibrary, AtmosphereScope, AtmosphereFragment, CulturalCustom
     if not d:
         return AtmosphereLibrary()
     import dataclasses as _dc
@@ -174,7 +174,7 @@ def _load_atmosphere_library(d: dict):
 # ═══════════════════════════════════════════════════════
 
 def state_dir() -> str:
-    import project_context as pctx
+    from project_mgmt import project_context as pctx
     return os.path.join(pctx.checkpoint_dir(), "state")
 
 
@@ -362,7 +362,7 @@ def save_meta(state: NovelState) -> None:
 
 def load_meta(state: NovelState) -> bool:
     """从 meta.json 读顶层字段写回 state。"""
-    import checkpoint as ck
+    from persistence import checkpoint as ck
     path = meta_file()
     if not os.path.exists(path):
         return False
@@ -371,7 +371,7 @@ def load_meta(state: NovelState) -> bool:
             meta = json.load(f)
     except (OSError, json.JSONDecodeError):
         return False
-    from state import TensionLevel
+    from persistence.state import TensionLevel
     for k in META_FIELDS:
         if k not in meta:
             continue
@@ -388,7 +388,7 @@ def load_meta(state: NovelState) -> bool:
             setattr(state, k, {int(ci): txt for ci, txt in (v or {}).items()})
         elif k == "chapter_chats":
             # 用字段过滤防老快照带多余字段崩
-            from state import ChatMessage
+            from persistence.state import ChatMessage
             import dataclasses as _dc
             _CM = {f.name for f in _dc.fields(ChatMessage)}
             parsed_chats = {}
@@ -405,7 +405,7 @@ def load_meta(state: NovelState) -> bool:
                 parsed_chats[ci_i] = lst
             setattr(state, k, parsed_chats)
         elif k == "reader_audits":
-            from state import ReaderExperienceAudit, ReaderExperienceIssue
+            from persistence.state import ReaderExperienceAudit, ReaderExperienceIssue
             import dataclasses as _dc
             _RI = {f.name for f in _dc.fields(ReaderExperienceIssue)}
             _RA = {f.name for f in _dc.fields(ReaderExperienceAudit)}
@@ -430,7 +430,7 @@ def load_meta(state: NovelState) -> bool:
                     print(f"  [load_meta] reader_audits[{ci_i}] 解析失败：{type(e).__name__}: {e}")
             setattr(state, k, parsed)
         elif k == "dialogue_audits":
-            from state import DialogueAudit, DialogueIssue
+            from persistence.state import DialogueAudit, DialogueIssue
             import dataclasses as _dc
             _DI = {f.name for f in _dc.fields(DialogueIssue)}
             _DA = {f.name for f in _dc.fields(DialogueAudit)}
@@ -454,7 +454,7 @@ def load_meta(state: NovelState) -> bool:
                     print(f"  [load_meta] dialogue_audits[{ci_i}] 解析失败：{type(e).__name__}: {e}")
             setattr(state, k, parsed)
         elif k == "stage_review_reports":
-            from state import ReviewIssue
+            from persistence.state import ReviewIssue
             import dataclasses as _dc
             _RI = {f.name for f in _dc.fields(ReviewIssue)}
             parsed = {}
@@ -468,7 +468,7 @@ def load_meta(state: NovelState) -> bool:
                 parsed[str(sid)] = lst
             setattr(state, k, parsed)
         elif k == "volume_review_reports":
-            from state import ReviewIssue
+            from persistence.state import ReviewIssue
             import dataclasses as _dc
             _RI = {f.name for f in _dc.fields(ReviewIssue)}
             parsed = {}
@@ -493,7 +493,7 @@ def load_meta(state: NovelState) -> bool:
                 except (TypeError, ValueError): continue
             setattr(state, k, parsed)
         elif k == "promises":
-            from state import Promise
+            from persistence.state import Promise
             import dataclasses as _dc
             _P = {f.name for f in _dc.fields(Promise)}
             parsed = []
@@ -505,7 +505,7 @@ def load_meta(state: NovelState) -> bool:
                         pass
             setattr(state, k, parsed)
         elif k == "asset_usage":
-            from state import AssetUsage
+            from persistence.state import AssetUsage
             import dataclasses as _dc
             _A = {f.name for f in _dc.fields(AssetUsage)}
             parsed = {}
@@ -517,7 +517,7 @@ def load_meta(state: NovelState) -> bool:
                         pass
             setattr(state, k, parsed)
         elif k == "romance_arcs":
-            from state import RomanceArc, RomanceEvent
+            from persistence.state import RomanceArc, RomanceEvent
             import dataclasses as _dc
             _A = {f.name for f in _dc.fields(RomanceArc)}
             _E = {f.name for f in _dc.fields(RomanceEvent)}
@@ -540,7 +540,7 @@ def load_meta(state: NovelState) -> bool:
                     pass
             setattr(state, k, parsed)
         elif k == "ability_audits":
-            from state import AbilityAudit, AbilityUse, AbilityIssue
+            from persistence.state import AbilityAudit, AbilityUse, AbilityIssue
             import dataclasses as _dc
             _AU = {f.name for f in _dc.fields(AbilityUse)}
             _AI = {f.name for f in _dc.fields(AbilityIssue)}
@@ -634,11 +634,11 @@ def migrate_from_single(legacy_state_json: str) -> bool:
         return False  # 已迁移过
 
     print(f"  [migrate] 检测到老 state.json，正在迁移到分文件结构...")
-    import checkpoint as ck
+    from persistence import checkpoint as ck
     with open(legacy_state_json, encoding="utf-8") as f:
         raw = json.load(f)
     # 用旧 loader 恢复完整 state
-    from state import NovelState
+    from persistence.state import NovelState
     state = ck._load_state(raw)
     # 拆分写入
     save_split(state)

@@ -9,8 +9,8 @@ VoiceConsistencyCheckerAgent — Phase 5：角色口吻一致性校验。
 
 低于阈值的段落标出来，写入 issues 列表，供 director 决定是否 revise。
 """
-from json_utils import request_json, pick_list
-from state import NovelState, ChapterDirective, CharacterRole
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, ChapterDirective, CharacterRole
 
 
 SYSTEM = """你是角色对话一致性校审员。你专挑"这个角色说的话不像他"的问题。

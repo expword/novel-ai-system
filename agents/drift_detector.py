@@ -10,8 +10,8 @@ DriftDetector — 漂移检测。
 产出 drift_report：哪几章可疑、可疑在哪、建议关注点。不自动回改，交给作者/HITL 决定。
 """
 from __future__ import annotations
-from json_utils import request_json
-from state import NovelState, CharacterRole
+from utils.json_utils import request_json
+from persistence.state import NovelState, CharacterRole
 
 
 def detect_drift(state: NovelState, window: int = 10) -> dict:

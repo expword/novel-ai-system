@@ -20,8 +20,8 @@ import inspect
 import concurrent.futures
 from openai import OpenAI, APIStatusError, APIConnectionError, APITimeoutError
 
-import llm_runtime
-import llm_pool
+from llm_layer import llm_runtime
+from llm_layer import llm_pool
 
 
 # 单请求超时配置
@@ -154,7 +154,7 @@ def _try_load_fallback_profile(exclude_profile: dict = None):
     没配 / 与当前主 profile 是同一条 → 返回 None（避免无意义自我重试）。
     """
     try:
-        import user_models as _um
+        from llm_layer import user_models as _um
         fb = _um.find_by_usage("fallback")
     except Exception:
         return None
@@ -189,7 +189,7 @@ def chat(
     """
     # 决定主 profile
     try:
-        import fallback_runner
+        from llm_layer import fallback_runner
         override_pid = fallback_runner.get_thread_profile_override()
     except Exception:
         override_pid = None
@@ -289,8 +289,8 @@ def chat_with_profile(
 
     仍走 llm_pool 全局池（并发/速率/熔断）。
     """
-    import llm_profiles
-    import user_models as _um
+    from llm_layer import llm_profiles
+    from llm_layer import user_models as _um
 
     # 优先在 user_models 里查（按 id 或按 usage）
     profile = None

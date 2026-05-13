@@ -16,8 +16,8 @@ EconomyDesignerAgent — Phase 1-H：自适应经济系统。
 
 这个 agent 根据 power_flow / genre 决定货币类型和物价语境。
 """
-from json_utils import request_json, pick_list
-from state import NovelState, Economy, Currency, PriceAnchor, WealthTierPoint
+from utils.json_utils import request_json, pick_list
+from persistence.state import NovelState, Economy, Currency, PriceAnchor, WealthTierPoint
 from agents.concept_pitch import format_concept_brief, format_world_context_brief
 from config import NUM_VOLUMES
 

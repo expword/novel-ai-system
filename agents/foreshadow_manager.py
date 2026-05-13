@@ -3,10 +3,10 @@ ForeshadowManagerAgent — 专项管理伏笔的规划/追踪/植入/兑现。
 与 memory.py 分离，专注于伏笔的全生命周期。
 """
 import json
-from json_utils import repair_json, safe_parse, pick_list, request_json
+from utils.json_utils import repair_json, safe_parse, pick_list, request_json
 from agents.concept_pitch import format_concept_brief
-from llm import system_user
-from state import NovelState, ForeshadowItem, ForeshadowImportance, RedHerring
+from llm_layer.llm import system_user
+from persistence.state import NovelState, ForeshadowItem, ForeshadowImportance, RedHerring
 from config import NUM_VOLUMES
 
 

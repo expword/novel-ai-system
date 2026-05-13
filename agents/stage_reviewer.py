@@ -11,8 +11,8 @@ StageReviewerAgent — Stage（大情节）写完后的整体审查。
 输出 ReviewIssue 列表，level=critical 触发指定章重写循环。
 """
 import os
-from json_utils import request_json
-from state import NovelState, ReviewIssue
+from utils.json_utils import request_json
+from persistence.state import NovelState, ReviewIssue
 import config
 
 

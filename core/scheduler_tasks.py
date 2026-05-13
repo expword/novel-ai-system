@@ -24,8 +24,8 @@
 这个文件只做"声明"——具体执行逻辑还在各个 agent 里。
 """
 from __future__ import annotations
-from scheduler import Task
-from state import NovelState
+from core.scheduler import Task
+from persistence.state import NovelState
 
 # ─── Phase 逻辑 import（延迟 import 可减少初次加载成本，但这里简单起见一次性导入）
 from agents.intent_analyzer import analyze_intent
@@ -106,8 +106,8 @@ def _phase_1e_world_check(state: NovelState):
 
 def _critical_realm_system(state: NovelState):
     """力量体系——失败则轮换模型重试 + 事后合规验证。"""
-    from fallback_runner import run_with_model_fallback
-    from validators import validate_and_regen, SECTION_VALIDATORS
+    from llm_layer.fallback_runner import run_with_model_fallback
+    from utils.validators import validate_and_regen, SECTION_VALIDATORS
 
     def _run_once():
         design_realm_system(state)
@@ -138,8 +138,8 @@ def _critical_realm_system(state: NovelState):
 
 def _critical_volume_planner(state: NovelState):
     """卷结构——失败则轮换模型重试 + 事后合规验证。"""
-    from fallback_runner import run_with_model_fallback
-    from validators import validate_and_regen, SECTION_VALIDATORS
+    from llm_layer.fallback_runner import run_with_model_fallback
+    from utils.validators import validate_and_regen, SECTION_VALIDATORS
     from config import NUM_VOLUMES
 
     def _run_once():
@@ -173,9 +173,9 @@ def _critical_volume_planner(state: NovelState):
 
 def _critical_character_designer(state: NovelState):
     """人物设计——失败则轮换模型重试 + 事后合规验证。"""
-    from fallback_runner import run_with_model_fallback
-    from validators import validate_and_regen, SECTION_VALIDATORS
-    from state import CharacterRole
+    from llm_layer.fallback_runner import run_with_model_fallback
+    from utils.validators import validate_and_regen, SECTION_VALIDATORS
+    from persistence.state import CharacterRole
 
     def _run_once():
         design_all_characters(state)
@@ -202,7 +202,7 @@ def _critical_character_designer(state: NovelState):
 
 def _critical_factions(state: NovelState):
     """势力格局——非 critical 但常出问题（层级跳跃/数量不足），加验证"""
-    from validators import validate_and_regen, SECTION_VALIDATORS
+    from utils.validators import validate_and_regen, SECTION_VALIDATORS
     from agents.faction_architect import design_factions as _design_factions
 
     _design_factions(state)

@@ -2,7 +2,7 @@
 状态审计 —— 流水线跑完后（或任何时候）检查 state 里每个 section 是否真的生成到位。
 
 用法：
-    from state_audit import print_state_audit, audit_state
+    from persistence.state_audit import print_state_audit, audit_state
     print_state_audit(state)           # 控制台人眼可读
     report = audit_state(state)        # 程序化消费（web /api/state_audit）
 
@@ -59,7 +59,7 @@ def _audit_power_system(state) -> tuple[str, str, list[str]]:
     issues = []
     if realms < 3 and stype in ("realms", "skill_tiers"):
         issues.append(f"仅 {realms} 个境界/层级（期望 ≥ 3）")
-    from validators import validate_section
+    from utils.validators import validate_section
     issues.extend(validate_section(state, "power_system"))
     status = "ok" if not issues else "partial"
     return status, f"类型 {stype}｜{realms} 级", issues
@@ -73,7 +73,7 @@ def _audit_volumes(state) -> tuple[str, str, list[str]]:
     from config import NUM_VOLUMES
     if len(vols) < NUM_VOLUMES:
         issues.append(f"卷数 {len(vols)} < NUM_VOLUMES({NUM_VOLUMES})")
-    from validators import validate_section
+    from utils.validators import validate_section
     issues.extend(validate_section(state, "volumes"))
     status = "ok" if not issues else "partial"
     return status, f"{len(vols)} 卷", issues
@@ -83,7 +83,7 @@ def _audit_factions(state) -> tuple[str, str, list[str]]:
     factions = getattr(state, "factions", []) or []
     if not factions:
         return "empty", "未生成", []
-    from validators import validate_section
+    from utils.validators import validate_section
     issues = validate_section(state, "factions")
     tier_counts = {}
     for f in factions:
@@ -121,7 +121,7 @@ def _audit_characters(state) -> tuple[str, str, list[str]]:
     chars = getattr(state, "characters", []) or []
     if not chars:
         return "empty", "未生成", []
-    from validators import validate_section
+    from utils.validators import validate_section
     issues = validate_section(state, "characters")
     roles = {}
     for c in chars:

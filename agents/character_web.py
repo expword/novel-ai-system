@@ -8,9 +8,9 @@ CharacterWebAgent — 设计完整的人物关系网络。
 - 隐藏同盟（前期不揭露）
 - 各卷关系如何变化（对立/和解/背叛/牺牲）
 """
-from json_utils import repair_json, request_json
-from llm import system_user
-from state import NovelState, RelationshipWeb, CharacterBond
+from utils.json_utils import repair_json, request_json
+from llm_layer.llm import system_user
+from persistence.state import NovelState, RelationshipWeb, CharacterBond
 from config import (
     NUM_VOLUMES,
     RELATIONSHIP_BONDS_MIN, RELATIONSHIP_BONDS_MAX,
@@ -47,7 +47,7 @@ def design_relationship_web(state: NovelState) -> None:
       3) 隐藏/翻转：表里不一 + 跨敌我 + 血亲暗线（~6-8 条）
       4) 权力结构 + 隐藏同盟（separate LLM call for non-bond items）
     """
-    from concurrency import parallel_map
+    from utils.concurrency import parallel_map
     from config import PARALLEL_WORKERS
     from agents import require_upstream
     if not require_upstream(state, "CharacterWeb",

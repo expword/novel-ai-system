@@ -10,9 +10,9 @@ FortunePlannerAgent — 规划主角的所有机缘。
 - 机缘引发后续剧情（不是获得就结束）
 - 高价值机缘要有竞争者（增加张力）
 """
-from json_utils import repair_json, pick_list, request_json
-from llm import system_user
-from state import NovelState, Fortune
+from utils.json_utils import repair_json, pick_list, request_json
+from llm_layer.llm import system_user
+from persistence.state import NovelState, Fortune
 from config import NUM_VOLUMES
 
 
