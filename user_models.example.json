@@ -1,0 +1,34 @@
+{
+    "_comment": "复制本文件为 user_models.json 后填入真实 API key。user_models.json 已在 .gitignore，不会上传。",
+    "_schema": "每个模型一条记录；usage 字段是 list，决定它充当哪些角色——main(写作主模型)/reviewer(审核员)/fallback(主模型失败兜底)。external 用途的 profile 由 power_system.special_abilities[*].external_llm_profile 直接绑定，不走 usage 路由。",
+
+    "models": [
+        {
+            "id": "main_openai_gpt4o",
+            "display_name": "主模型 · GPT-4o",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-...",
+            "model": "gpt-4o",
+            "usage": ["main", "fallback"],
+            "notes": "默认主模型；写作 / 规划 agents 都走它"
+        },
+        {
+            "id": "reviewer_claude",
+            "display_name": "审核员 · Claude Sonnet",
+            "base_url": "https://api.anthropic.com/v1",
+            "api_key": "sk-ant-...",
+            "model": "claude-sonnet-4-5",
+            "usage": ["reviewer"],
+            "notes": "审核员模型——主模型写完后用它评分"
+        },
+        {
+            "id": "doubao",
+            "display_name": "豆包 / 叙事内 AI（小说里主角问 AI 调这个）",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "api_key": "your-doubao-key",
+            "model": "doubao-pro-32k",
+            "usage": [],
+            "notes": "不走 usage 路由；由 state.power_system.special_abilities[*].external_llm_profile=\"doubao\" 显式绑定。writer 写正文时遇到 [[ASK_AI:豆包|问题]] 占位 → 用这个 profile 真发问询取回答。"
+        }
+    ]
+}

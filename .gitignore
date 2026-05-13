@@ -1,0 +1,85 @@
+# ═══════════════════════════════════════════════════
+#  敏感数据（含 API key / 个人小说内容）—— 必须 ignore
+# ═══════════════════════════════════════════════════
+
+# LLM 服务商 API key（每个用户自己配，不进版本控制）
+user_models.json
+.env
+.env.local
+.env.*.local
+
+# 项目数据（小说全文、checkpoint、控制信号、LLM 调用 metrics）
+projects/
+output/
+
+# LangSmith / OpenAI 等可能的环境变量备份
+*.key
+*.secret
+
+# ═══════════════════════════════════════════════════
+#  本地开发数据 / 缓存 / 临时产物
+# ═══════════════════════════════════════════════════
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# 第三方框架源码（用户克隆来参考的，不是项目代码）
+langgraph/
+
+# 运行时日志 / 临时文件
+*.log
+*.tmp
+control/
+*.sqlite
+*.sqlite3
+checkpoints.sqlite
+
+# Web 前端 vendor 库（npm install 出来的）
+web/static/vendor/
+
+# ═══════════════════════════════════════════════════
+#  IDE / 编辑器
+# ═══════════════════════════════════════════════════
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Claude Code 本地配置
+.claude/
+
+# ═══════════════════════════════════════════════════
+#  v2 探索目录（如果同仓库管理）—— 看用户选择
+# ═══════════════════════════════════════════════════
+# 如果 v2 跟 v1 不在同一仓库管理，去掉下面注释把它 ignore
+# ../xiaoshuo_v2/checkpoints.sqlite
