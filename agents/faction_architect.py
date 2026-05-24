@@ -146,8 +146,12 @@ def _design_tier_framework(
         "- 克苏鲁：凡人团体 → 非凡协会 → 教团/基金会 → 组织领袖 → 古神"
     )
 
+    # Phase 2.1:thread-local user_feedback 注入(带反馈重生成走这条路径)
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+
     # ── A. 层级骨架（只要 tier labels，不要 factions）────────────
-    skeleton_prompt = f"""
+    skeleton_prompt = f"""{feedback_prefix}
 为《{state.title}》设计势力/组织的【层级骨架】——只给每层的 label 和内部矛盾，**不要填具体势力**。
 
 {world_ctx}

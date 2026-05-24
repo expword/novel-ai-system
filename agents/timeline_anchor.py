@@ -41,7 +41,10 @@ def design_timeline(state: NovelState) -> None:
     world_secrets = [f for f in state.memory.facts if "世界秘密" in f][:5]
 
     world_ctx = format_world_context_brief(state)
-    prompt = f"""
+    # Phase 2.1:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为《{state.title}》设计历史/往事时间轴。
 
 {world_ctx}

@@ -888,9 +888,12 @@ def _generate_characters_batch(
     返回本批成功新增的角色数。
     """
     existing = _existing_cast_brief(state)
+    # Phase 2.1:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
     # min_items 是 request_json 的"软目标"——设成 2，确保 LLM 至少吐两个；
     # target_max 通过 prompt 传给 LLM 当上限，但数量不达标也接受
-    prompt = f"""
+    prompt = f"""{feedback_prefix}
 为《{state.title}》{instruction}
 
 {_common_context(state)}

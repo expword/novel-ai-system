@@ -8,6 +8,7 @@ from llm_layer.llm import system_user
 from persistence.state import NovelState
 from config import NUM_VOLUMES
 from agents.concept_pitch import format_world_context_brief
+from agents.intent_analyzer import format_reality_basis_constraints
 
 
 SYSTEM_BUILD = """你是多题材世界观构建师。按本书题材设计合适维度和深度的世界观。
@@ -48,10 +49,15 @@ def build_world(state: NovelState) -> None:
     ) if state.factions else "待设计"
 
     world_ctx = format_world_context_brief(state)
-    prompt = f"""
+    basis_block = format_reality_basis_constraints(state.creative_intent) if state.creative_intent else ""
+    basis_section = (basis_block + "\n\n") if basis_block else ""
+    # Phase 2.1:thread-local user_feedback 注入(带反馈重生成时,modal 的反馈进这里)
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 请为《{state.title}》构建详细的世界观设定。
 
-{world_ctx}
+{basis_section}{world_ctx}
 
 题材：{state.genre}
 主题：{state.theme}

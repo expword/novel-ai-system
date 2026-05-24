@@ -87,11 +87,15 @@ def _to_jsonable(obj):
 def generate_phase_drafts(state: NovelState, phase_id: str,
                             regen_fn: Callable[[], None],
                             count: int = 3,
-                            notes_prefix: str = "") -> list[PhaseDraft]:
+                            notes_prefix: str = "",
+                            user_feedback: str = "") -> list[PhaseDraft]:
     """跑 regen_fn count 次,每次产生一个候选;state 自动 restore 到调用前.
 
     regen_fn 是无参可调用对象,内部应当调到对应 phase 的 agent 函数,
     修改 PHASE_FIELDS_MAP[phase_id] 列出的字段.
+
+    user_feedback: 非空时通过 thread-local 注入到 agent prompt
+    (要求 agent 调 utils.feedback_helper.get_user_feedback_prefix())
 
     返回新生成的 PhaseDraft 列表(已 append 到 state.phase_drafts[phase_id]).
     """
@@ -104,28 +108,32 @@ def generate_phase_drafts(state: NovelState, phase_id: str,
     existing = state.phase_drafts.get(phase_id) or []
     start_index = (max((d.version_index for d in existing), default=0) + 1) if existing else 1
 
+    # user_feedback 通过 thread-local 隐式传递到 agent;支持嵌套 scope
+    from utils.feedback_helper import user_feedback_scope
+
     new_drafts: list[PhaseDraft] = []
-    for i in range(count):
-        # 1. restore 字段(确保每次从同一起点跑)
-        _restore_fields(state, backup)
-        # 2. 跑 regen
-        try:
-            regen_fn()
-        except Exception as e:
-            print(f"  ⚠ generate_phase_drafts phase={phase_id} v{start_index + i} 失败:{type(e).__name__}: {e}")
-            continue
-        # 3. 提取本次结果
-        payload = {f: _to_jsonable(getattr(state, f, None)) for f in fields}
-        # 4. 构造 PhaseDraft
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        draft = PhaseDraft(
-            phase_id=phase_id,
-            version_index=start_index + i,
-            payload=payload,
-            created_at=ts,
-            notes=notes_prefix or "",
-        )
-        new_drafts.append(draft)
+    with user_feedback_scope(user_feedback):
+        for i in range(count):
+            # 1. restore 字段(确保每次从同一起点跑)
+            _restore_fields(state, backup)
+            # 2. 跑 regen(agent 内部会读 thread-local feedback)
+            try:
+                regen_fn()
+            except Exception as e:
+                print(f"  ⚠ generate_phase_drafts phase={phase_id} v{start_index + i} 失败:{type(e).__name__}: {e}")
+                continue
+            # 3. 提取本次结果
+            payload = {f: _to_jsonable(getattr(state, f, None)) for f in fields}
+            # 4. 构造 PhaseDraft
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            draft = PhaseDraft(
+                phase_id=phase_id,
+                version_index=start_index + i,
+                payload=payload,
+                created_at=ts,
+                notes=notes_prefix or "",
+            )
+            new_drafts.append(draft)
 
     # 5. 最终 restore,state 回到调用前状态(候选与 state 解耦)
     _restore_fields(state, backup)

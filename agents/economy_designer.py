@@ -50,7 +50,10 @@ def design_economy(state: NovelState) -> None:
     ) if realm_plan else "（无境界规划）"
 
     world_ctx = format_world_context_brief(state)
-    prompt = f"""
+    # Phase 2.1:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为《{state.title}》设计经济系统。
 
 {world_ctx}

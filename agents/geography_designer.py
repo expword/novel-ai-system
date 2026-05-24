@@ -237,7 +237,10 @@ def _dispatch_skeleton(state: NovelState, context: str) -> dict:
     region_plan 里每个 region 只含 id/name/level/parent_id/importance（不填具体描述）。
     输出量约 1000-1500 字，留足空间给下游并发填充。
     """
-    prompt = f"""{context}
+    # Phase 2.1:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}{context}
 
 ═══ 任务：只生成骨架（不要在本步填写 region 的详细描述）═══
 

@@ -457,9 +457,13 @@ def api_phase_drafts_generate(project_id, phase_id):
         }), 404
 
     # 跑 generate_phase_drafts (内部 backup → regen ×N → restore)
+    # Phase 2.1:user_feedback 通过 thread-local 注入 agent prompt(已接入 agent 的会读到)
     notes_prefix = f"用户反馈:{user_feedback}" if user_feedback else ""
     try:
-        new_drafts = generate_phase_drafts(s, phase_id, regen_fn, count=count, notes_prefix=notes_prefix)
+        new_drafts = generate_phase_drafts(
+            s, phase_id, regen_fn, count=count,
+            notes_prefix=notes_prefix, user_feedback=user_feedback,
+        )
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
@@ -470,12 +474,12 @@ def api_phase_drafts_generate(project_id, phase_id):
         return jsonify({"error": f"save_state 失败: {type(e).__name__}: {e}"}), 500
 
     return jsonify({
-        "status":         "ok",
-        "phase_id":       phase_id,
-        "generated":      len(new_drafts),
-        "total_drafts":   len(s.phase_drafts.get(phase_id, [])),
-        "user_feedback":  user_feedback,
-        "feedback_note":  "本期 user_feedback 仅作 notes 记录,未塞入 regen LLM prompt — 见 Phase 2.1",
+        "status":              "ok",
+        "phase_id":            phase_id,
+        "generated":           len(new_drafts),
+        "total_drafts":        len(s.phase_drafts.get(phase_id, [])),
+        "user_feedback":       user_feedback,
+        "user_feedback_applied": bool(user_feedback),
     })
 
 
@@ -1182,27 +1186,39 @@ def api_put_section(name):
 def api_regen(action):
     if action not in regen_mod.REGEN_ACTIONS:
         abort(404, description=f"未知 regen 动作：{action}")
+    # Phase 2.1:user_feedback 走 thread-local 注入,agent 拼 prompt 时自动读到
+    user_feedback = (request.args.get("user_feedback") or "").strip()
+    from utils.feedback_helper import user_feedback_scope
     try:
-        result = regen_mod.REGEN_ACTIONS[action]()
+        with user_feedback_scope(user_feedback):
+            result = regen_mod.REGEN_ACTIONS[action]()
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    return jsonify({"status": "ok", "action": action, "result": result})
+    return jsonify({
+        "status": "ok", "action": action, "result": result,
+        "user_feedback_applied": bool(user_feedback),
+    })
 
 
 @app.route("/api/regen/<action>/<arg>", methods=["POST"])
 def api_regen_with_arg(action, arg):
     if action not in regen_mod.REGEN_ACTIONS_WITH_ARG:
         abort(404, description=f"未知 regen 动作：{action}")
+    user_feedback = (request.args.get("user_feedback") or "").strip()
+    from utils.feedback_helper import user_feedback_scope
     try:
-        # 尝试转 int
         try:
             arg_val = int(arg)
         except ValueError:
             arg_val = arg
-        result = regen_mod.REGEN_ACTIONS_WITH_ARG[action](arg_val)
+        with user_feedback_scope(user_feedback):
+            result = regen_mod.REGEN_ACTIONS_WITH_ARG[action](arg_val)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    return jsonify({"status": "ok", "action": action, "arg": arg, "result": result})
+    return jsonify({
+        "status": "ok", "action": action, "arg": arg, "result": result,
+        "user_feedback_applied": bool(user_feedback),
+    })
 
 
 # ═══════════════════════════════════════════════════════

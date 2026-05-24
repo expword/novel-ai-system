@@ -71,10 +71,13 @@ def _plan_global_by_type(state: NovelState, line_type: str, count: int, desc_hin
         for ln in state.global_lines
     ) or "（尚无已规划的全局线）"
 
-    prompt = f"""
-为《{state.title}》规划贯穿全书的【{line_type}】（{count} 条）。
+    # Phase 2.1:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
+为《{state.title}》规划贯穿全书的【{line_type}】({count} 条)。
 
-全书共 {len(state.volumes)} 卷，{total_chapters} 章。
+全书共 {len(state.volumes)} 卷,{total_chapters} 章。
 
 各卷概况：
 {volumes_desc}
