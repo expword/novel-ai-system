@@ -148,7 +148,7 @@
       </span>
     </template>
 
-    <!-- 情形 C：阶段完成，有 currentGroupId 且 idle —— 显示三按钮 -->
+    <!-- 情形 C：阶段完成，有 currentGroupId 且 idle —— 显示审核界面入口 + 继续按钮 -->
     <template x-if="currentGroupId && projStatus === 'idle'">
       <span class="phase-actions-inner">
         <button class="btn-mini btn-primary"
@@ -157,18 +157,13 @@
                 title="启动子进程跑下一组规划">
           ▶ 继续下一阶段
         </button>
-        <!-- ✓ / ↺ 二选一 -->
+        <!-- 打开审核界面 -->
         <template x-if="!groupActed(currentGroupId)">
-          <span class="phase-action-group">
-            <button class="btn-mini" @click="markGroupReviewed()"
-                    title="确认当前阶段的审核与修改">
-              ✓ 确定应用
-            </button>
-            <button class="btn-mini btn-danger-mini" @click="rollbackGroup()"
-                    title="回滚到当前阶段完成时的状态（丢弃审核期间所有编辑）">
-              ↺ 取消应用
-            </button>
-          </span>
+          <button class="btn-mini btn-review-open"
+                  @click="openReviewModal(currentGroupId)"
+                  title="打开本阶段的审核界面 — 查看每项产物 / 重生成 / 修改 / 应用">
+            📋 打开审核界面
+          </button>
         </template>
         <!-- 已做过决定：显示徽章 -->
         <template x-if="groupActed(currentGroupId)">
@@ -2998,6 +2993,147 @@
       </div>
     </template>
   </main>
+
+  <!-- ═══ 阶段组审核 Modal(替换原横幅 ✓/↺ 二选一)═══ -->
+  <div class="review-modal-overlay" x-show="reviewModal.open"
+       x-transition.opacity
+       @keydown.escape.window="closeReviewModal()"
+       style="display: none;">
+    <div class="review-modal" @click.outside="closeReviewModal()">
+      <!-- 头部 -->
+      <div class="review-modal-header">
+        <div class="rm-title">
+          <span class="rm-icon">📋</span>
+          <span>审核:<b x-text="reviewModal.groupName"></b></span>
+          <span class="rm-subtitle">共 <span x-text="(reviewModal.phases||[]).length"></span> 项</span>
+        </div>
+        <button class="rm-close" @click="closeReviewModal()" title="关闭(Esc)">✕</button>
+      </div>
+
+      <!-- body:左 tabs + 右内容 -->
+      <div class="review-modal-body">
+        <!-- 左侧 tabs -->
+        <nav class="rm-tabs">
+          <template x-for="(p, idx) in (reviewModal.phases || [])" :key="p.phase_id">
+            <button class="rm-tab"
+                    :class="{'rm-tab-active': reviewModal.activeTab === p.phase_id}"
+                    @click="switchReviewTab(p.phase_id)">
+              <span class="rm-tab-name" x-text="p.name"></span>
+              <small class="rm-tab-id" x-text="p.phase_id"></small>
+            </button>
+          </template>
+        </nav>
+
+        <!-- 右侧内容 -->
+        <section class="rm-content">
+          <template x-if="reviewModal.activeTab && reviewModal.tabData[reviewModal.activeTab]">
+            <div>
+              <h3 class="rm-content-title">
+                <span x-text="activeReviewPhaseName()"></span>
+                <small class="dim" x-text="'(' + reviewModal.activeTab + ')'"></small>
+              </h3>
+
+              <!-- 加载中 -->
+              <template x-if="reviewModal.tabData[reviewModal.activeTab].loading">
+                <div class="rm-loading">⏳ 加载中…</div>
+              </template>
+
+              <!-- 数据 -->
+              <template x-if="!reviewModal.tabData[reviewModal.activeTab].loading
+                              && reviewModal.tabData[reviewModal.activeTab].data !== null">
+                <pre class="rm-data-pre" x-text="formatReviewData(reviewModal.tabData[reviewModal.activeTab].data)"></pre>
+              </template>
+
+              <!-- 错误 -->
+              <template x-if="reviewModal.tabData[reviewModal.activeTab].error">
+                <div class="rm-error" x-text="reviewModal.tabData[reviewModal.activeTab].error"></div>
+              </template>
+
+              <!-- 操作按钮 -->
+              <div class="rm-actions">
+                <button class="btn-sec rm-action"
+                        @click="regenCurrentPhase()"
+                        :disabled="reviewModal.tabData[reviewModal.activeTab].busy
+                                   || !activeReviewRegenAction()"
+                        :title="activeReviewRegenAction()
+                                ? '调 /api/regen/'+activeReviewRegenAction()+' 覆盖式重生成本项'
+                                : '本项无独立 regen 入口'">
+                  <span x-show="!reviewModal.tabData[reviewModal.activeTab].busy">🔄 重新生成</span>
+                  <span x-show="reviewModal.tabData[reviewModal.activeTab].busy">⏳ 重生成中…</span>
+                </button>
+                <button class="btn-sec rm-action"
+                        @click="regenWithFeedback()"
+                        :disabled="reviewModal.tabData[reviewModal.activeTab].busy
+                                   || !activeReviewRegenAction()"
+                        title="给 LLM 一段反馈后重生成">
+                  ✏️ 带反馈重生成
+                </button>
+                <button class="btn-sec rm-action"
+                        @click="openCandidateGeneration()"
+                        title="生成 3 个候选版本对比挑选(Phase 2 待实现 - LLM ×3 成本)"
+                        disabled>
+                  🎲 生成 3 候选 <small>(Phase 2)</small>
+                </button>
+                <button class="btn-sec rm-action"
+                        @click="openPhaseSection()"
+                        title="关闭 modal,跳到对应 section 编辑面板">
+                  📝 打开编辑面板
+                </button>
+              </div>
+            </div>
+          </template>
+          <template x-if="!reviewModal.activeTab">
+            <div class="rm-loading dim">点击左侧 tab 查看具体项目</div>
+          </template>
+        </section>
+      </div>
+
+      <!-- 底部操作栏:整组确认/取消 -->
+      <div class="review-modal-footer">
+        <div class="rm-footer-hint">
+          <small class="dim">
+            ✓ 全部确认应用:把当前所有项的修改写入正式 state;
+            ↺ 全部取消应用:回滚到本组完成时的快照,丢弃审核期间所有编辑
+          </small>
+        </div>
+        <div class="rm-footer-actions">
+          <button class="btn-sec" @click="closeReviewModal()">关闭(不应用)</button>
+          <button class="btn-danger-mini"
+                  @click="rollbackGroup(); closeReviewModal()"
+                  :title="'回滚 ' + reviewModal.groupName + ' 阶段到完成时的快照'">
+            ↺ 全部取消应用
+          </button>
+          <button class="btn-primary"
+                  @click="markGroupReviewed(); closeReviewModal()"
+                  :title="'确认应用 ' + reviewModal.groupName + ' 阶段的所有修改'">
+            ✓ 全部确认应用
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 带反馈重生成的小弹窗(嵌套 review-modal 内) -->
+  <div class="review-feedback-overlay" x-show="feedbackModal.open"
+       x-transition.opacity
+       style="display: none;">
+    <div class="review-feedback-box">
+      <h3>✏️ 带反馈重生成:<span x-text="feedbackModal.phaseName"></span></h3>
+      <p class="dim">给 LLM 一段反馈,告诉它本次生成应当如何不同。反馈会塞到 prompt 顶部。</p>
+      <textarea class="rm-feedback-input"
+                x-model="feedbackModal.text"
+                placeholder="例:这次的反派太脸谱,给一个有充分动机的灰色反派;或者:把势力数量从 5 个减到 3 个,每个更立体"
+                rows="4"></textarea>
+      <div class="rm-feedback-actions">
+        <button class="btn-sec" @click="feedbackModal.open=false">取消</button>
+        <button class="btn-primary"
+                @click="submitFeedbackRegen()"
+                :disabled="!feedbackModal.text.trim()">
+          🚀 用此反馈重生成
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- 版本侧边抽屉 -->
   <aside class="drawer" x-show="showVersions" @click.away="showVersions=false">

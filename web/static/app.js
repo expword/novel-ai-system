@@ -69,6 +69,22 @@ function app() {
     // 作者对某组已经做过二选一的决定（确定应用 / 取消应用），不能再选另一个
     // 切换到新组或回滚后会被清
     actedGroups: {},          // { [group_id]: 'reviewed' | 'rolled_back' }
+    // ── 审核 modal(替换原 ✓/↺ 二选一)─────────────────────
+    reviewModal: {
+      open: false,
+      groupId: "",
+      groupName: "",
+      phases: [],          // [{phase_id, name, section, regen_action}]
+      activeTab: "",        // 当前选中的 phase_id
+      tabData: {},          // { [phase_id]: {loading, data, error, busy} }
+    },
+    // 带反馈重生成的小弹窗
+    feedbackModal: {
+      open: false,
+      phaseId: "",
+      phaseName: "",
+      text: "",
+    },
     // 下一章写作（stepwise 框架就绪后显示）
     nextChapterIndex: 0,
     nextChapterInspiration: "",
@@ -580,6 +596,178 @@ function app() {
       if (v === "reviewed")     return "✓ 已确认应用";
       if (v === "rolled_back")  return "↺ 已回滚";
       return "";
+    },
+
+    // ════════════ 审核 Modal ════════════
+    async openReviewModal(groupId) {
+      if (!this.currentProject || !groupId) return;
+      this.reviewModal.open = true;
+      this.reviewModal.groupId = groupId;
+      this.reviewModal.groupName = this._groupNameOf(groupId);
+      this.reviewModal.phases = [];
+      this.reviewModal.activeTab = "";
+      this.reviewModal.tabData = {};
+      try {
+        const r = await fetch(
+          `/api/projects/${encodeURIComponent(this.currentProject)}/group_review_payload?group_id=${encodeURIComponent(groupId)}`
+        );
+        if (!r.ok) {
+          this.reviewModal.phases = [];
+          this.error = `审核界面加载失败:HTTP ${r.status}`;
+          return;
+        }
+        const j = await r.json();
+        this.reviewModal.phases = j.phases || [];
+        if (this.reviewModal.phases.length) {
+          await this.switchReviewTab(this.reviewModal.phases[0].phase_id);
+        }
+      } catch (e) {
+        this.error = `审核界面加载异常:${e.message}`;
+      }
+    },
+
+    closeReviewModal() {
+      this.reviewModal.open = false;
+      this.feedbackModal.open = false;
+    },
+
+    async switchReviewTab(phaseId) {
+      if (!phaseId) return;
+      this.reviewModal.activeTab = phaseId;
+      // 若已加载过则直接显示
+      const cached = this.reviewModal.tabData[phaseId];
+      if (cached && cached.data !== null && !cached.error) return;
+      // 拉数据
+      const phase = (this.reviewModal.phases || []).find(p => p.phase_id === phaseId);
+      if (!phase) return;
+      this.reviewModal.tabData[phaseId] = { loading: true, data: null, error: "", busy: false };
+      try {
+        const r = await fetch(this._api(`/api/section/${phase.section}`));
+        if (!r.ok) {
+          this.reviewModal.tabData[phaseId] = {
+            loading: false, data: null, busy: false,
+            error: `加载 section=${phase.section} 失败 HTTP ${r.status}`,
+          };
+          return;
+        }
+        const data = await r.json();
+        this.reviewModal.tabData[phaseId] = { loading: false, data, error: "", busy: false };
+      } catch (e) {
+        this.reviewModal.tabData[phaseId] = {
+          loading: false, data: null, busy: false,
+          error: `网络异常:${e.message}`,
+        };
+      }
+    },
+
+    activeReviewPhaseName() {
+      const pid = this.reviewModal.activeTab;
+      const p = (this.reviewModal.phases || []).find(p => p.phase_id === pid);
+      return p ? p.name : pid;
+    },
+
+    activeReviewRegenAction() {
+      const pid = this.reviewModal.activeTab;
+      const p = (this.reviewModal.phases || []).find(p => p.phase_id === pid);
+      return p ? (p.regen_action || "") : "";
+    },
+
+    formatReviewData(data) {
+      if (data === null || data === undefined) return "(无数据)";
+      try {
+        return JSON.stringify(data, null, 2);
+      } catch (e) {
+        return String(data);
+      }
+    },
+
+    async regenCurrentPhase() {
+      const action = this.activeReviewRegenAction();
+      if (!action) {
+        this.error = "本项无 regen action,无法直接重生成";
+        return;
+      }
+      const pid = this.reviewModal.activeTab;
+      if (!confirm(`确认重新生成【${this.activeReviewPhaseName()}】?\n这会覆盖当前数据(自动留版本快照)。`)) return;
+      const slot = this.reviewModal.tabData[pid] || { loading: false, data: null, error: "", busy: false };
+      slot.busy = true;
+      this.reviewModal.tabData[pid] = { ...slot };
+      try {
+        const r = await fetch(this._api(`/api/regen/${encodeURIComponent(action)}`), { method: "POST" });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          this.error = `重生成失败 HTTP ${r.status}: ${j.error || ""}`;
+          slot.busy = false;
+          this.reviewModal.tabData[pid] = { ...slot };
+          return;
+        }
+        this.flash = `✓ 已重新生成【${this.activeReviewPhaseName()}】`;
+        // 清缓存重拉
+        this.reviewModal.tabData[pid] = { loading: false, data: null, error: "", busy: false };
+        await this.switchReviewTab(pid);
+      } catch (e) {
+        this.error = `重生成网络异常:${e.message}`;
+        slot.busy = false;
+        this.reviewModal.tabData[pid] = { ...slot };
+      }
+    },
+
+    regenWithFeedback() {
+      const action = this.activeReviewRegenAction();
+      if (!action) {
+        this.error = "本项无 regen action,无法带反馈重生成";
+        return;
+      }
+      this.feedbackModal.open = true;
+      this.feedbackModal.phaseId = this.reviewModal.activeTab;
+      this.feedbackModal.phaseName = this.activeReviewPhaseName();
+      this.feedbackModal.text = "";
+    },
+
+    async submitFeedbackRegen() {
+      const fb = (this.feedbackModal.text || "").trim();
+      if (!fb) return;
+      const action = this.activeReviewRegenAction();
+      const pid = this.feedbackModal.phaseId;
+      this.feedbackModal.open = false;
+      const slot = this.reviewModal.tabData[pid] || { loading: false, data: null, error: "", busy: false };
+      slot.busy = true;
+      this.reviewModal.tabData[pid] = { ...slot };
+      try {
+        // user_feedback 走 query param,后端 regen 函数可选读取(本期 Phase 1 后端可能尚未消费,
+        // 提示用户:目前 feedback 文本仅作为日志,Phase 2 才真正塞 prompt)
+        const r = await fetch(
+          this._api(`/api/regen/${encodeURIComponent(action)}?user_feedback=${encodeURIComponent(fb)}`),
+          { method: "POST" }
+        );
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          this.error = `带反馈重生成失败 HTTP ${r.status}: ${j.error || ""}`;
+          slot.busy = false;
+          this.reviewModal.tabData[pid] = { ...slot };
+          return;
+        }
+        this.flash = `✓ 已用反馈重生成【${this.activeReviewPhaseName()}】(注:Phase 1 反馈未塞 prompt,Phase 2 实现)`;
+        this.reviewModal.tabData[pid] = { loading: false, data: null, error: "", busy: false };
+        await this.switchReviewTab(pid);
+      } catch (e) {
+        this.error = `带反馈重生成网络异常:${e.message}`;
+        slot.busy = false;
+        this.reviewModal.tabData[pid] = { ...slot };
+      }
+    },
+
+    openCandidateGeneration() {
+      // Phase 2 待实现:生成 3 候选 + 版本切换 + 选定
+      this.flash = "🎲 生成 3 候选功能:Phase 2 待实现(state.phase_drafts + diff/apply 机制)";
+    },
+
+    openPhaseSection() {
+      const pid = this.reviewModal.activeTab;
+      const p = (this.reviewModal.phases || []).find(p => p.phase_id === pid);
+      if (!p) return;
+      this.closeReviewModal();
+      this.load(p.section);
     },
 
     async markGroupReviewed() {

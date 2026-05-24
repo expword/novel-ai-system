@@ -351,8 +351,71 @@ _PHASE_GROUPS = [
     {"id": "G2_world",           "name": "世界",     "phases": ["1A", "1A2", "1B", "1C", "1D", "1E", "1F", "1G", "1H"]},
     {"id": "G3_characters",      "name": "人物",     "phases": ["2", "2A2", "2B", "2C"]},
     {"id": "G4_plot",            "name": "情节",     "phases": ["3A", "3B", "3B2", "3C", "3D", "3D2", "3E", "3E2", "3E3", "3F", "3G"]},
-    {"id": "G5_framework_ready", "name": "框架就绪", "phases": []},  # 虚拟组：前 4 组全完成即满足
+    {"id": "G5_framework_ready", "name": "框架就绪", "phases": []},  # 虚拟组:前 4 组全完成即满足
 ]
+
+# Phase → 审核 modal 元数据(section 用于切到现有面板编辑, regen_action 用于"重生成"按钮)
+# regen_action == None 表示该 phase 暂无独立 regen 入口(modal 里隐藏重生成按钮)
+_PHASE_REVIEW_META: dict = {
+    "-1":   {"name": "意图分析",     "section": "creative_intent", "regen_action": None},
+    "0":    {"name": "立项三件套",   "section": "concept_pitch",   "regen_action": "after_concept_pitch"},
+    "0.5":  {"name": "全书骨架",     "section": "master_outline",  "regen_action": "master_outline"},
+    "0.6":  {"name": "主角内核",     "section": "protagonist_journey", "regen_action": None},
+    "1A":   {"name": "力量体系",     "section": "power_system",    "regen_action": "power_system"},
+    "1A2":  {"name": "力量刻度",     "section": "power_system",    "regen_action": "power_scaling"},
+    "1B":   {"name": "卷结构",       "section": "volumes",         "regen_action": "volumes"},
+    "1C":   {"name": "势力格局",     "section": "factions",        "regen_action": "factions"},
+    "1D":   {"name": "世界观",       "section": "world",           "regen_action": "world"},
+    "1E":   {"name": "世界观校验",   "section": "world",           "regen_action": None},
+    "1F":   {"name": "地理",         "section": "geography",       "regen_action": "geography"},
+    "1G":   {"name": "时间线",       "section": "timeline",        "regen_action": "timeline"},
+    "1H":   {"name": "经济",         "section": "economy",         "regen_action": "economy"},
+    "2":    {"name": "人物档案",     "section": "characters",      "regen_action": "characters"},
+    "2A2":  {"name": "人物深化",     "section": "characters",      "regen_action": None},   # 单角色 regen 走 character_refine
+    "2B":   {"name": "关系网络",     "section": "relationship_web","regen_action": "relationships"},
+    "2C":   {"name": "特殊能力",     "section": "power_system",    "regen_action": "special_abilities"},
+    "3A":   {"name": "全局叙事线",   "section": "lines",           "regen_action": "lines"},
+    "3B":   {"name": "卷内叙事线",   "section": "lines",           "regen_action": "lines"},
+    "3B2":  {"name": "冲突阶梯",     "section": "conflict_ladder", "regen_action": "conflict_ladder"},
+    "3C":   {"name": "爽点系统",     "section": "satisfaction_points", "regen_action": "satisfaction"},
+    "3D":   {"name": "节奏",         "section": "rhythm_plans",    "regen_action": None},
+    "3D2":  {"name": "情绪曲线",     "section": "emotion_curve",   "regen_action": "emotion_curve"},
+    "3E":   {"name": "伏笔",         "section": "foreshadow_items","regen_action": "foreshadows"},
+    "3E2":  {"name": "红鲱鱼",       "section": "red_herrings",    "regen_action": None},
+    "3E3":  {"name": "反转系统",     "section": "twist_system",    "regen_action": "twists"},
+    "3F":   {"name": "机缘",         "section": "fortunes",        "regen_action": None},
+    "3G":   {"name": "主角历程",     "section": "protagonist_journey", "regen_action": None},
+}
+
+
+@app.route("/api/projects/<project_id>/group_review_payload")
+def api_group_review_payload(project_id):
+    """审核 modal 用:返回某 group 的所有 phase 元数据(name/section/regen_action).
+    前端按 section 调现有 /api/section/<name> 拉数据;按 regen_action 调 /api/regen/<action>。
+    """
+    project_context.set_project(project_id)
+    group_id = (request.args.get("group_id") or "").strip()
+    if not group_id:
+        return jsonify({"error": "缺 group_id"}), 400
+    group = next((g for g in _PHASE_GROUPS if g["id"] == group_id), None)
+    if not group:
+        return jsonify({"error": f"未知 group_id: {group_id}"}), 404
+    phases_out = []
+    for pid in group["phases"]:
+        meta = _PHASE_REVIEW_META.get(pid)
+        if not meta:
+            continue
+        phases_out.append({
+            "phase_id":     pid,
+            "name":         meta["name"],
+            "section":      meta["section"],
+            "regen_action": meta["regen_action"],
+        })
+    return jsonify({
+        "group_id":   group_id,
+        "group_name": group["name"],
+        "phases":     phases_out,
+    })
 
 
 @app.route("/api/projects/<project_id>/next_phase_group")
