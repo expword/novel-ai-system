@@ -79,6 +79,35 @@ class ForeshadowImportance(str, Enum):
     DETAIL = "细节伏笔"   # 世界细节/彩蛋
 
 
+class SetupKind(str, Enum):
+    """SetupEntry 的事件类型——爽点 callback 锚点的来源分类。
+
+    SetupLedger 从正文里识别这些事件,触发爽点章前供 writer 作为具体回响候选。
+    """
+    HUMILIATION = "humiliation"             # 被嘲讽/侮辱(有具体台词)
+    LOSS = "loss"                            # 被夺走/失去重要人事物
+    REJECTION = "rejection"                  # 被拒绝/被推开
+    UNDERESTIMATION = "underestimation"      # 被小看/被无视
+    FAILED_ATTEMPT = "failed_attempt"        # 主角自己尝试失败
+    VOW = "vow"                              # 主角立誓/承诺
+    DEBT = "debt"                            # 欠下人情/仇恨
+
+
+class HookType(str, Enum):
+    """章末钩子类型——网文中决定下章追读的关键。
+
+    chapter_planner 必须给每章选一个 HookType,避免向"悬念钩"单一类型收敛。
+    critic 检查 hook_type_compliance(本卷最近 5 章同类型 ≥4 个扣分)。
+    """
+    SUSPENSE = "suspense"            # 悬念钩:话音未落/门外传来/某个角色突然现身
+    REVERSAL = "reversal"            # 反转钩:全章被压制,末句主角微笑/反派惊愕
+    INFO_REVEAL = "info_reveal"      # 信息钩:揭露翻盘信息后停笔(身份/秘密/真相)
+    EMOTIONAL = "emotional"          # 情感钩:主角做出决断/感情转折,后果留下章
+    PHYSICAL = "physical"            # 物理钩:看到不该出现的人/物/场景(惊鸿一瞥)
+    DEATH = "death"                  # 死亡钩:重要角色突然出事(伤亡/失踪)
+    CLIFF = "cliff"                  # 悬崖钩:字面危险情境(被追/中毒/坠落)
+
+
 class RhythmType(str, Enum):
     SLOW_BUILD = "慢热铺垫"
     FAST_ACTION = "快节奏战斗"
@@ -176,6 +205,10 @@ class SpecialAbility:
     source: str                     # 来源（传承/天赋/功法/机缘/血脉/穿越随身/师承/拾获...）
     description: str                # 整体描述（50字）
     unlock_condition: str           # 最初解锁条件（对应第1阶段，或"获得即可用"）
+    usage_rule: str = ""            # 什么时候允许使用（场景/触发/前置条件）
+    effect_scope: str = ""          # 能做到什么（效果范围/强度/对象）
+    hard_limits: str = ""           # 明确不能做到什么（硬边界）
+    cost_rule: str = ""             # 每次使用或关键使用必须付出的代价/冷却/风险
     # ── 持有者与对主角的关系 ─────────────────────────
     holder_role: str = ""           # "主角自身" / "伙伴" / "对手" / "中立" / "隐藏"
     holder_name: str = ""           # 具体角色名（由 character_designer 在角色设计后回填）
@@ -455,6 +488,75 @@ class RedHerring:
     actual_truth: str               # 真相（作者视角，60字）
     planted: bool = False
     debunked: bool = False
+
+
+@dataclass
+class SetupEntry:
+    """爽点 callback 账本条目——从正文里提取的"被埋下/待回响"事件。
+
+    与 SatisfactionPoint.setup_chain 的关系:
+      · setup_chain 是规划期预定的"我打算在第 N 章铺垫什么"(抽象 content)
+      · SetupEntry 是章后从实际正文里提取的"我已经埋下了什么"(具体 quote/scene)
+      · 触发爽点章前,find_callback_seeds() 拉出相关 pending entry 给 writer 当回响锚点
+    """
+    entry_id: str                          # 唯一 id (e.g. "setup_0001")
+    chapter: int                           # 发生章
+    kind: SetupKind
+    actor: str                             # 主体(通常是主角)
+    counterpart: str                       # 对手方(嘲讽者/夺走者/...)
+    quote: str                             # 具体台词(20-50字,可空)
+    scene_summary: str                     # 具体场景(50字)
+    suggested_sp_id: str = ""              # LLM 建议关联的爽点 sp_id(可空)
+    payoff_status: str = "pending"         # pending / partial / paid
+    callback_chapter: int = -1             # 实际兑现章 (-1=未兑现)
+    callback_quote: str = ""               # 兑现时的具体表达(可空)
+
+
+@dataclass
+class SimulatedComment:
+    """模拟读者评论——comment_simulator 章后生成,挂在 ChapterSummary 上。
+
+    4 类身份(reader_type):
+      · 追读派 — 主线党,关心剧情推进/情感投入(positive 居多)
+      · 挑刺派 — 逻辑党,挑设定漏洞/文笔毛病(critical)
+      · 路过派 — 吐槽党,玩梗调侃(neutral)
+      · 章评党 — 金句党,截图段落/夸或骂(mixed)
+    """
+    reader_type: str            # 追读派 / 挑刺派 / 路过派 / 章评党
+    nickname: str               # 读者昵称(LLM 生成,匿名风格)
+    text: str                   # 评论内容(40-100字)
+    sentiment: str = "neutral"  # positive / neutral / negative / critical
+
+
+@dataclass
+class ReaderExpectation:
+    """读者预期——expectation_manager 在写章前预测,挂在 ChapterDirective 上。
+
+    chapter_planner 必须对每条预期标 decision:
+      · satisfy — 满足预期(常规推进,读者爽)
+      · reverse — 反转预期(出意料,读者震惊)
+      · stack   — 加料(预期内 + 额外惊喜,双向)
+
+    decision 由 chapter_planner LLM 在生成蓝图时填(可能修改)。
+    """
+    expectation: str            # 读者读完前一章会预期什么(30字)
+    based_on: str               # 基于哪个线索(如"第 5 章末:门外传来咳嗽声"——20字)
+    decision: str = ""          # satisfy / reverse / stack(空=未决策)
+
+
+@dataclass
+class FlavorAdvice:
+    """老作者直觉调味建议——flavor_advisor 每 N 章扫一次产出。
+
+    输入:最近 N 章的 critic 评分 / reader_audit / 模拟评论。
+    输出:接下来 1-3 章应当加什么"调味料"(新反派出场/感情线推进/吃个小亏 等)。
+
+    chapter_planner 读最近一条 advice 注入 prompt,作为可选灵感。
+    """
+    generated_at_chapter: int    # 生成本条建议的章号
+    target_range: str            # 建议作用范围(如"第 12-15 章")
+    advice: list[str]            # 具体建议条目(3-5 条,每条 ≤ 50 字)
+    reasoning: str = ""          # 给的理由(50 字内,可空)
 
 
 # ═══════════════════════════════════════════════════════
@@ -815,6 +917,15 @@ class Volume:
     volume_antagonist: str
     key_events: list[str] = field(default_factory=list)
     chapter_outlines: list[dict] = field(default_factory=list)
+    # ↑ 每条字段约定（由 volume_planner.plan_volume_chapters 生成）：
+    #   index           int       章号
+    #   title           str       章标题
+    #   goal            str       本章主线该推进什么（60 字内）
+    #   position        str       卷首 / 普通 / 卷中高潮 / 卷尾
+    #   stage_id        str       关联到 4_stage 的舞台 id（可空）
+    #   chapter_focus   str       本章一件最重要的事（一句话，30 字）— NEW
+    #   reader_hook     str       让读者翻下一页的具体钩子（具体到画面/对话/悬念，40 字）— NEW
+    # （chapter_focus / reader_hook 是写章前作者可审、writer 必须命中的硬约束）
     # ── 分形起承转合 ──────────────────────────────────
     structure_role: str = ""   # 本卷在整本书起承转合中的角色："起"/"承"/"转"/"合"
                                # （若两卷合并承担一个角色，可为"起后半"/"承前半"等）
@@ -907,6 +1018,17 @@ class SceneBeat:
 
 
 @dataclass
+class HookSpec:
+    """章末钩子规格——类型 + 50 字描述。
+
+    chapter_planner 输出时填充;writer 按 hook_type 调整章末写法;
+    critic 检查本卷同类型分布。
+    """
+    type: HookType                  # 钩子类型(7 种)
+    text: str = ""                  # 具体钩子描述(50 字,如"门外传来师父的咳嗽声")
+
+
+@dataclass
 class ChapterBlueprint:
     """章节蓝图：场景级写作指令，确保每章有明确进展。"""
     chapter_index: int
@@ -919,6 +1041,8 @@ class ChapterBlueprint:
     structure_role: str = ""   # 本章在所属小情节（SubScene）起承转合中的角色："起"/"承"/"转"/"合"
     purpose: str = ""          # 为什么必须写这一章（40字，不能是"推进剧情"这种空话）
     expression: str = ""       # 本章想表达什么（30字，主题/情绪/信息）
+    # ── 钩子类型（Batch 3：防钩子单一化收敛）────────────────
+    closing_hook_spec: Optional[HookSpec] = None  # 钩子类型 + 描述,空时降级到 closing_hook 字符串
 
 @dataclass
 class ChapterDirective:
@@ -956,6 +1080,10 @@ class ChapterDirective:
     user_inspiration: str = ""                          # 作者想让本章包含的元素/桥段/情感/画面
     # ── 重写时的作者反馈（来自 Web UI 的"不满意重写"）──
     user_feedback: str = ""                             # 作者对上一版本不满意的具体反馈
+    # ── 爽点 callback 锚点(由 director 在触发爽点的章填充, writer 必须精确引用)──
+    callback_seeds: list[str] = field(default_factory=list)  # 格式: "[kind·第N章·counterpart] 「quote」 — summary"
+    # ── 读者预期(Batch 5:expectation_manager 写章前预测,chapter_planner 标 decision)──
+    reader_expectations: list[ReaderExpectation] = field(default_factory=list)
 
 
 @dataclass
@@ -991,6 +1119,12 @@ class ChapterSummary:
                                        # 偏差描述：哪些蓝图要求被改动了
                                        # 例："蓝图要求第 2 幕反派揭面，实际未发生"
     blueprint_compliance: int = 100    # 0-100 蓝图遵循度（100=完全按蓝图）
+    # ── SetupLedger 章后扫稿提取(本章兑现了哪些 entry_id)─────
+    setup_callbacks_invoked: list[str] = field(default_factory=list)
+    # ── HookType 历史(Batch 3:critic 检查同类型连发扣分)─────
+    closing_hook_type: str = ""        # HookType.value 或空字符串
+    # ── 模拟读者评论(Batch 5:comment_simulator 章后生成)──────
+    simulated_comments: list[SimulatedComment] = field(default_factory=list)
 
 
 # ═══════════════════════════════════════════════════════
@@ -1521,6 +1655,30 @@ class IntentRevision:
 
 
 @dataclass
+class PlotSupplement:
+    """
+    plot_enhancer（Phase -0.7）产出的"补充情节建议"——让系统主动反问
+    "作者意图够不够吸引读者"，补 3-5 个钩子供作者审。
+
+    采纳后下游 agent 必须落地：
+      · satisfaction_system 把它转成具体爽点（payoff/setup）
+      · foreshadow_manager 把它转成伏笔
+      · twist_designer 把它转成反转层
+      · volume_planner 引用到具体卷/章 outline
+
+    intensity: low / mid / high —— 决定下游落地的强度（low=暗线伏笔；high=主线钩子）
+    adopted: 作者是否采纳；None = 待审，True = 采纳，False = 拒绝
+    """
+    name: str = ""                  # 短名（10-15 字，给作者看的标题）
+    what: str = ""                  # 具体补什么（60 字）
+    why_engaging: str = ""          # 为什么这能让读者留下（40 字）
+    where_to_inject: str = ""       # 建议注入到哪——卷/章范围（如"第 1 卷中段"）
+    intensity: str = "mid"          # low / mid / high
+    adopted: Optional[bool] = None  # None 待审 / True 采纳 / False 拒绝
+    notes: str = ""                 # 作者审核时加的备注
+
+
+@dataclass
 class CreativeIntent:
     """
     创作意图层（Phase -1）—— 作者用自然语言描述心里想写什么。
@@ -1568,6 +1726,25 @@ class CreativeIntent:
     # ── 综合性基调摘要（一段话，所有下游 prompt 都引用）
     tone_summary: str = ""              # 100字，描述这本书的整体气质
     analyzer_notes: str = ""            # LLM 分析时的额外说明（给作者看）
+
+    # ── 故事根基（真实 vs 虚构）─────────────────────
+    # 由"⓪ 故事根基"问答 / IntentAnalyzer 自动推断 / 用户在面板上手动改 三种途径写入。
+    # 决定下游 character_designer / world_builder / writer / canon_checker 是否
+    # 把"真实历史人物言行"作为硬约束。
+    #   "real_history"   严格基于真实历史——朝代/事件/人物言行须符合史料
+    #   "real_adapted"   基于真实人物或事件改编——大方向尊重，细节可演绎
+    #   "fictional"      完全虚构——人物事件均可自由编撰
+    #   ""               未指定（兜底按 fictional 处理）
+    reality_basis: str = ""
+    respect_real_figures: bool = False  # 是否强制尊重 real_persons 名单的言行（仅 real_history/real_adapted）
+    real_persons: list[str] = field(default_factory=list)  # 要尊重史实的真实人物名单（如 "李世民"/"诸葛亮"）
+    historical_setting: str = ""        # 历史背景描述（朝代/时期/区域，仅 real_* 模式下有意义）
+
+    # ── 补充情节（plot_enhancer Phase -0.7 产物）─────
+    # 让系统主动反问"只看作者写的会不会无聊"——补 3-5 个能吸引读者的情节钩子。
+    # 由 LLM 生成 + 作者在 web UI 审（采纳/拒绝）；采纳的会被 satisfaction_system /
+    # foreshadow_manager / twist_designer / volume_planner 引用并落地为具体设计。
+    plot_supplements: list["PlotSupplement"] = field(default_factory=list)
 
 
 @dataclass
@@ -2096,6 +2273,94 @@ class ReviewIssue:
 
 
 @dataclass
+class LearnedAbility:
+    """角色掌握的一项能力——比 Character.ability 一行字详细 100 倍。
+
+    用于跨章追踪：每次使用 use_count +1，last_used_chapter 自动更新。
+    learned_at_chapter 为 -1 = 出生/起手就会（无需"习得"事件）。
+    """
+    name: str
+    learned_at_chapter: int = -1            # -1 = 与生俱来
+    source: str = ""                         # 怎么学到的（30字）
+    ceiling: str = ""                        # 当前能做到的极限（如"只能瞬移 10 米"）
+    cost: str = ""                           # 使用代价（如"消耗 1 年寿元"）
+    cooldown: str = ""                       # 冷却描述（如"每月只能一次"）
+    last_used_chapter: int = -1
+    use_count: int = 0
+    notes: str = ""                          # 杂项备注
+
+
+@dataclass
+class PowerEvent:
+    """一次能力使用事件——按章/按角色记录。
+
+    power_timeline_tracker 写章后从正文识别并 append。
+    跟 ability_audits 不同：ability_audits 只追主角金手指 + LLM 评分；
+    PowerEvent 是所有角色的所有能力使用流水。
+    """
+    chapter_index: int
+    user: str                                # 使用者
+    ability_name: str
+    target: str = ""                         # 目标（"敌人/自己/某物"，30字）
+    effect: str = ""                         # 实际效果（40字）
+    cost_paid: str = ""                      # 实际付出的代价（30字）
+    success: bool = True
+    extracted_by: str = "auto"               # "auto" = LLM/规则抽 / "manual" = 用户手工添
+
+
+@dataclass
+class CharacterAbilityProfile:
+    """角色能力档案——结构化记录"X 角色能做什么 / 不能做什么 / 怎么成长"。
+
+    跟 Character.ability (一行字) 互补：profile 是详细版，跨章追踪用。
+    主角的 special_abilities (金手指) 通过 holder_name 关联——
+    profile.linked_special_assets 列出该角色持有的 asset 名。
+
+    解决用户的实际需求：
+      "主角的能力，还有其他人的能力都是需要长时间记录的，刚刚生成小说的时候就需要生成，
+       防止后面矛盾，还需要记录什么时候用什么能力"
+    """
+    holder_name: str
+    innate_talents: list[str] = field(default_factory=list)        # 天赋（出生就有的能力倾向）
+    learned_abilities: list[LearnedAbility] = field(default_factory=list)
+    linked_special_assets: list[str] = field(default_factory=list) # 持有的金手指 asset 名
+    ceiling_now: str = ""                                          # 当前总体能力上限（卷级，会随成长更新）
+    weakness: str = ""                                              # 弱点 / 克星 / 不能做的事
+    signature_moves: list[str] = field(default_factory=list)       # 招牌动作（让读者一眼认出该角色）
+    forbidden_combos: list[str] = field(default_factory=list)      # 不能做的能力组合（如"X 与 Y 不能同时用"）
+    growth_arc_by_volume: dict[int, str] = field(default_factory=dict)  # {卷号: 本卷末能力状态}
+    updated_at_chapter: int = -1                                   # 上次更新所处章节
+    notes: str = ""
+
+
+@dataclass
+class WorldCanon:
+    """world_setting 大段自然语言里的**机器可读关键锚点**。
+
+    设计动机：state.world_setting 是几千字的自然语言（包含 [geography] /
+    [history] / [society] / [economy] / [culture] / [taboos] 等标签段落），
+    下游 agent 和 canon_checker 无法机器比对——LLM 自己抽取容易漂移
+    （如把"大雍王朝"写成"白鹿朝"）。
+
+    本字段由独立 agent（world_canon_extractor）在 Phase 1D 后从 world_setting
+    抽出关键锚点，存为结构化字段。后续：
+      · canon_checker.validate_text 把这些锚点加入 known 集合，能机器抓 canon 冲突
+      · volume_planner 等上游引用 anchor 时不用每次都从大段文本里 grep
+      · web 编辑 world_setting 时自动重新抽取
+
+    所有字段都允许为空——非穿越类小说不一定有"朝代/年号"概念。
+    """
+    dynasty_name: str = ""              # 朝代/国号（如"大雍王朝"）—— canon_checker 用于抓"白鹿朝"等违规
+    era_name: str = ""                  # 当前年号（如"景和十七年"）
+    region_root: str = ""               # 主角根地理（如"江州府青石县"）
+    epoch_summary: str = ""             # 时代一句话定性（如"皇权衰落，门阀垄断"）
+    canonical_aliases: list[str] = field(default_factory=list)  # 朝代的别称/简称（"大雍"是"大雍王朝"的简称）
+    forbidden_anchors: list[str] = field(default_factory=list)  # 不可改写的关键设定锚点（来自 [taboos]）
+    extracted_at_phase: str = ""        # 抽取时所处 phase（便于检测 stale）
+    source_hash: str = ""               # world_setting 抽取时的 md5 前 12 位（变了就 stale）
+
+
+@dataclass
 class NovelState:
     title: str
     genre: str
@@ -2105,6 +2370,15 @@ class NovelState:
     world_setting: str = ""
     world_factions_desc: str = ""
     overall_arc: str = ""
+
+    # 世界观结构化锚点——从 world_setting 大段自然语言抽出的机器可读 canon
+    # 由 agents/world_canon_extractor.py 在 Phase 1D 后自动抽取
+    world_canon: WorldCanon = field(default_factory=WorldCanon)
+
+    # 角色能力档案 + 能力使用时间线——跨章一致性追踪
+    # 规划期由 character_ability_designer 生成；写作期 power_timeline_tracker 更新
+    character_ability_profiles: dict[str, CharacterAbilityProfile] = field(default_factory=dict)
+    power_events: list[PowerEvent] = field(default_factory=list)
 
     # 整本书起承转合分段规划（顶层分形根）
     book_structure: BookStructurePlan = field(default_factory=BookStructurePlan)
@@ -2188,6 +2462,11 @@ class NovelState:
     factions: list[Faction] = field(default_factory=list)
     satisfaction_points: list[SatisfactionPoint] = field(default_factory=list)
     foreshadow_items: list[ForeshadowItem] = field(default_factory=list)
+    setup_ledger: list[SetupEntry] = field(default_factory=list)
+    # Batch 6:调味建议滚动队列(只保留最近 5 条)
+    flavor_advices: list[FlavorAdvice] = field(default_factory=list)
+    # Batch 6:平台 rulebook 缓存(立项时按 target_platform 加载,空=未匹配/无规则)
+    platform_rules: str = ""
     rhythm_plans: list[VolumeRhythmPlan] = field(default_factory=list)
 
     # 关系网络
@@ -2739,4 +3018,3 @@ class NovelState:
         parts.append(f"第{chapter_index}章{ch_tag}")
 
         return " → ".join(parts)
-

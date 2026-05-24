@@ -161,6 +161,23 @@ def _design_concept_pitch(state: NovelState) -> None:
     )
     state.concept_pitch = pitch
 
+    # Batch 6:根据 target_platform 加载对应平台 rulebook 到 state.platform_rules
+    # writer / critic / chapter_planner 后续 prompt 会注入这份规则
+    try:
+        from utils.platform_rulebook import load_platform_rulebook, resolve_platform_alias
+        _rulebook = load_platform_rulebook(pitch.target_platform or "")
+        if _rulebook:
+            state.platform_rules = _rulebook
+            _base = resolve_platform_alias(pitch.target_platform or "")
+            print(f"  📚 平台 rulebook 已加载: {_base} ({len(_rulebook)} 字符)")
+        else:
+            state.platform_rules = ""
+            if pitch.target_platform:
+                print(f"  ⚠ 平台 rulebook 未匹配 (target_platform={pitch.target_platform!r}) ——"
+                      " writer/critic 将不注入平台规则")
+    except Exception as _e:
+        print(f"  ⚠ 平台 rulebook 加载失败(不阻塞):{type(_e).__name__}: {_e}")
+
     print(f"  ✓ 立项：{pitch.one_line_pitch}")
     print(f"    读者：{pitch.target_audience}｜{pitch.target_platform}｜{pitch.target_age_group}")
     print(f"    卖点：{' / '.join(pitch.core_selling_points[:3])}")

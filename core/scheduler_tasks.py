@@ -44,7 +44,6 @@ from agents.economy_designer import design_economy
 from agents.character_designer import design_all_characters
 from agents.major_supporting_refiner import refine_major_characters
 from agents.character_web import design_relationship_web
-from agents.character_arc_designer import design_character_arcs
 from agents.line_planner import plan_global_lines, plan_all_volume_lines_parallel
 from agents.conflict_ladder import design_conflict_ladder
 from agents.satisfaction_system import plan_all_satisfaction_points
@@ -270,20 +269,20 @@ ALL_TASKS: list[Task] = [
     # 4 · 世界 · 地理 / 时间 / 经济（三者可并发）
     Task(id="1F", phase="4 · 世界", agent_name="地理",
          detail="区划/交通/距离矩阵",
-         fn=design_geography, depends_on=["1A", "1B"]),
+         fn=design_geography, depends_on=["1D"]),
 
     Task(id="1G", phase="4 · 世界", agent_name="时间线",
          detail="历史事件时间轴",
-         fn=design_timeline, depends_on=["1A", "1C"]),
+         fn=design_timeline, depends_on=["1D"]),
 
     Task(id="1H", phase="4 · 世界", agent_name="经济",
          detail="货币/物价/财富曲线",
-         fn=design_economy, depends_on=["1A"]),
+         fn=design_economy, depends_on=["1D"]),
 
     # 6 · 人物 · 档案——模型轮换兜底（主角必须有）
     Task(id="2A", phase="6 · 人物", agent_name="人物档案",
          detail="按 MasterOutline slots 并发生成（带模型轮换）",
-         fn=_critical_character_designer, depends_on=["1A", "1B", "1C", "0.5"], critical=True),
+         fn=_critical_character_designer, depends_on=["1A", "1B", "1C", "1D", "0.5"], critical=True),
 
     Task(id="2A2", phase="6 · 人物", agent_name="人物深化",
          detail="主角+主要配角+反派 细节刻画（并发）",
@@ -297,13 +296,9 @@ ALL_TASKS: list[Task] = [
          detail="能力设定 + 持有者绑定",
          fn=_phase_2c_abilities, depends_on=["2A", "1A"]),
 
-    Task(id="2D", phase="6 · 人物", agent_name="心理弧光",
-         detail="每人一条成长弧（并发）",
-         fn=design_character_arcs, depends_on=["2A", "1B"]),
-
     Task(id="2C2", phase="6 · 人物", agent_name="能力路线图",
          detail="金手指/物品 lifecycle（铺垫/获得/首用/升级…）+ 反向 SP + 标 arc",
-         fn=_phase_2c2_ability_roadmap, depends_on=["2C", "2D", "2A", "1B"]),
+         fn=_phase_2c2_ability_roadmap, depends_on=["2C", "2A", "1B", "3C"]),
 
     # 5 · 情节架构：多数子模块可并发
     Task(id="3A", phase="5 · 情节架构", agent_name="全局叙事线",
@@ -312,7 +307,7 @@ ALL_TASKS: list[Task] = [
 
     Task(id="3B", phase="5 · 情节架构", agent_name="卷内叙事线",
          detail="每卷专属线（并发）",
-         fn=plan_all_volume_lines_parallel, depends_on=["3A", "2D"]),
+         fn=plan_all_volume_lines_parallel, depends_on=["3A"]),
 
     Task(id="3B2", phase="5 · 情节架构", agent_name="冲突阶梯",
          detail="每卷冲突类型+层级",
@@ -350,7 +345,7 @@ ALL_TASKS: list[Task] = [
     # 7 · 章节：舞台 + 章节类型
     Task(id="4", phase="7 · 章节", agent_name="叙事舞台",
          detail="逐卷大情节/小情节划分",
-         fn=_phase_all_stages, depends_on=["3A", "3B", "2D", "3F"]),
+         fn=_phase_all_stages, depends_on=["3A", "3B", "3F"]),
 
     Task(id="4C", phase="7 · 章节", agent_name="章节类型",
          detail="每卷章节类型配比",

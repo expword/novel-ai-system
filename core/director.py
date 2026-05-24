@@ -30,6 +30,7 @@ DirectorAgent — 总导演：管理12个智能体的完整执行流水线。
 """
 import os
 import json
+from dataclasses import asdict
 from datetime import datetime
 from utils.json_utils import repair_json, safe_parse
 from persistence.checkpoint import (
@@ -51,8 +52,11 @@ from agents.realm_designer import (
 from agents.geography_designer import design_geography
 from agents.timeline_anchor import design_timeline
 from agents.economy_designer import design_economy
-from agents.character_arc_designer import design_character_arcs
-from agents.volume_planner import plan_all_volumes, plan_volume_chapters
+from agents.volume_planner import (
+    plan_all_volumes,
+    plan_volume_chapters,
+    validate_volume_outline_structure,
+)
 from agents.faction_architect import design_factions, get_factions_for_volume
 from agents.world_builder import build_world, run_world_checklist
 from agents.character_designer import design_all_characters
@@ -83,11 +87,9 @@ from agents.foreshadow_manager import plan_red_herrings
 from agents.chapter_type_planner import plan_chapter_types
 from agents.continuity_checker import check_continuity
 from agents.voice_consistency_checker import check_voice_consistency
-from agents.pacing_analyzer import analyze_pacing, attach_pacing_to_summary, format_pacing_report
 from agents.state_updater import update_state_after_chapter
 from agents.glossary_manager import update_glossary
 from agents.sensitive_filter import filter_and_report, format_report as format_sensitive_report
-from agents.drift_detector import detect_drift, print_drift_report
 from persistence import version_control
 from project_mgmt import human_in_loop
 from project_mgmt.human_in_loop import HITLPause
@@ -99,7 +101,7 @@ from config import (
     NUM_VOLUMES, WORDS_PER_CHAPTER,
     MAX_REVISION_ROUNDS, MIN_PASS_SCORE,
     OUTPUT_DIR, PLANS_DIR,
-    HITL_MODE, DRIFT_CHECK_EVERY_N_CHAPTERS,
+    HITL_MODE,
     INTENT_DESCRIPTION,
 )
 from llm_layer.llm import system_user
@@ -123,15 +125,30 @@ VOLUME_TENSION_CURVE = [
 DIRECTOR_SYSTEM = "你是经验丰富的小说总导演，为每章生成精确叙事指令。输出严格JSON。"
 
 
+class ChapterCanonBlockedError(RuntimeError):
+    """canon-revise 跑满 N 轮仍有 critical 违规——本章拒绝定稿，整个写作流程 halt。
+
+    语义（不兜底）：
+      · 章节文件 rename 为 .draft.txt（作者可手动审查/修改）
+      · completed_chapters 中本章被 pop（保持一致：未定稿不算完成章节）
+      · 不调 mark_chapter_done（下次启动会重写本章）
+      · 抛出后整个 _write_volume / run 链路停止，用户必须修复 outline/canon 才能继续
+
+    存在意义：避免"critical 残留 → progress_warning → 章节照样定稿"的软兜底。
+    """
+
+
 # ── stepwise 阶段组定义 ──────────────────────────────────
 # 与 web/app.py:_PHASE_GROUPS 保持一致；复制一份避免循环 import。
 # _stepwise_checkpoint 用它判定"本组应跑的 phase 是否全部 done"——
 # 如果 stepwise 跑完一组但仍有 phase 没标 done（多半是 LLM 失败 / 上游缺失），
 # 不能悄悄滑到下一组，要在 progress_status 留下警告 + 强制暂停让用户审核。
 _STEPWISE_GROUPS = {
+    # 注意：-1.5（intent_asset_extractor）和 -0.7（plot_enhancer）是 best-effort 步骤——
+    # 失败不阻塞 G1，所以不挂在 group 必跑清单里（director 单独 if-not-done 跑）
     "G1_intent":          ["-1", "0", "0.5", "0.6"],
     "G2_world":           ["1A", "1A2", "1B", "1C", "1D", "1E", "1F", "1G", "1H"],
-    "G3_characters":      ["2", "2A2", "2B", "2C", "2D", "2C2"],
+    "G3_characters":      ["2", "2A2", "2B", "2C", "2C2"],
     "G4_plot":            ["3A", "3B", "3B2", "3C", "3D", "3D2", "3E", "3E2", "3E3", "3F", "3G"],
     "G5_framework_ready": [],
 }
@@ -166,6 +183,9 @@ def _phase_label(pid: str) -> str:
     if pid.startswith("4_beats_"):
         try: return f"舞台节拍·第{int(pid.rsplit('_',1)[-1])}卷"
         except Exception: return pid
+    if pid.startswith("4_lifecycle_"):
+        try: return f"能力节点落章·第{int(pid.rsplit('_',1)[-1])}卷"
+        except Exception: return pid
     if pid.startswith("4_vol"):
         try: return f"章节大纲·第{int(pid[5:])}卷"
         except Exception: return pid
@@ -198,7 +218,6 @@ _TASK_PREDICATES = {
     # Phase 2 · 人物
     "2A":  lambda s: bool(s.characters),
     "2B":  lambda s: bool(s.relationship_web.bonds),
-    "2D":  lambda s: bool(s.character_arcs),
     # Phase 3 · 情节
     "3A":  lambda s: bool(s.global_lines),
     "3B":  lambda s: bool(s.volume_lines),
@@ -211,9 +230,28 @@ _TASK_PREDICATES = {
     "3E3": lambda s: bool(s.twist_system and s.twist_system.chains),  # 反转链
     "3F":  lambda s: bool(s.fortunes),
     "3G":  lambda s: bool(s.protagonist_journey.overall_theme),
+    "2C2": lambda s: bool(
+        s.power_system
+        and s.power_system.special_abilities
+        and all(getattr(a, "lifecycle_nodes", None) for a in s.power_system.special_abilities)
+    ),
     "4":   lambda s: bool(s.story_stages),
     "4C":  lambda s: bool(s.chapter_type_plans),
 }
+
+
+def _volume_lifecycle_nodes_assigned(state: NovelState, volume_index: int) -> bool:
+    if not state.power_system or not state.power_system.special_abilities:
+        return False
+    if not all(getattr(a, "lifecycle_nodes", None) for a in state.power_system.special_abilities):
+        return False
+    nodes = [
+        n
+        for asset in (state.power_system.special_abilities or [])
+        for n in (getattr(asset, "lifecycle_nodes", None) or [])
+        if getattr(n, "target_volume", 0) == volume_index
+    ]
+    return not nodes or all(getattr(n, "target_chapter", 0) > 0 for n in nodes)
 
 
 def _scheduler_predicate(task, state) -> bool:
@@ -241,7 +279,6 @@ _PHASE_FIELDS_FOR_DIAGNOSIS = {
     "1H":  [("economy.currencies / items",          lambda s: len(getattr(s.economy, "currencies", []) or []) + len(getattr(s.economy, "items", []) or []), 1, "条")],
     "2A":  [("characters",                          lambda s: len(s.characters), 3, "个")],
     "2B":  [("relationship_web.bonds",              lambda s: len(s.relationship_web.bonds), 1, "条")],
-    "2D":  [("character_arcs",                      lambda s: len(s.character_arcs), 1, "条")],
     "3A":  [("global_lines",                        lambda s: len(s.global_lines), 1, "条")],
     "3B":  [("volume_lines",                        lambda s: len(s.volume_lines), 1, "条")],
     "3B2": [("conflict_ladder.entries",             lambda s: len(s.conflict_ladder.entries), 1, "条")],
@@ -281,8 +318,8 @@ def _diagnose_phase_failure(phase: str, state) -> str:
 class DirectorAgent:
 
     def __init__(self, resume: bool = True):
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        os.makedirs(PLANS_DIR, exist_ok=True)
+        os.makedirs(project_context.project_dir(), exist_ok=True)
+        os.makedirs(project_context.plans_dir(), exist_ok=True)
 
         self._progress = load_progress()
         # 启动时的 phase 完成集合——用它对比判断"本次运行新完成了哪些 phase"
@@ -352,20 +389,50 @@ class DirectorAgent:
         audit_fn: callable(state, chapter_index, text) -> audit_obj 或 None
         audits_dict: state.<...>_audits 引用，重审通过会覆盖该 chapter_index 的条目
         label: 仅用于"输出过短"日志（"polish" / "reader-revise" / "dialogue-revise"）
+
+        实现：内部走 core.revise_loop.run_revise_loop(max_rounds=1)——
+        这样 5 处 revise 路径全部归一到同一框架，写盘/字数同步/长度兜底
+        逻辑单一来源。caller 行为不变（向后兼容）。
         """
-        from persistence.state import count_chapter_words
-        if not (new_text and len(new_text) >= int(0.7 * len(original_text))):
-            print(f"  ⚠ {label} 输出过短 ({len(new_text)}/{len(original_text)})，保留原稿")
+        from core.revise_loop import ReviseConfig, run_revise_loop
+
+        # caller 自己负责调 revise——这个 helper 收到的是 new_text 已经生成好的
+        # 包装成"假 revise_fn"：忽略 feedback，直接返回 caller 给的 new_text
+        # 同时 audit 包装成始终 needs_revise=False（因为已经触发过，单轮即收）
+        def _stub_revise(_s, _d, _t, _fb):
+            return new_text
+
+        def _audit_wrap(state, ci, text):
+            return audit_fn(state, ci, text) if audit_fn else None
+
+        cfg = ReviseConfig(
+            label=label,
+            audit_fn=_audit_wrap,
+            # 第一次 audit（initial_audit=None 时入口跑）总是返回 None 或 audit obj——
+            # needs_revise 永远 True 才能进 loop（caller 已经决定了要 revise）
+            needs_revise=lambda _a: True,
+            feedback_builder=lambda _a, _r: "",
+            revise_fn=_stub_revise,
+            max_rounds=1,
+            min_length_ratio=0.7,
+            on_short=lambda r, n, o, s: print(
+                f"  ⚠ {label} 输出过短 ({n}/{o})，保留原稿"
+            ),
+            chapter_path=path,
+            update_word_count=True,
+        )
+        # 给 initial_audit 一个 dummy 让 needs_revise=True 评估通过（不实际重跑入口 audit）
+        result = run_revise_loop(
+            state=self.state, chapter_index=chapter_index, directive=None,
+            config=cfg, initial_text=original_text,
+            initial_audit=object(),  # dummy，让 needs_revise 立即返回 True
+        )
+        if result.rounds_accepted == 0:
             return None, original_text
-        with open(path, "w", encoding="utf-8") as fpw:
-            fpw.write(new_text)
-        sm = next((c for c in self.state.completed_chapters if c.index == chapter_index), None)
-        if sm:
-            sm.word_count = count_chapter_words(new_text)
-        new_audit = audit_fn(self.state, chapter_index, new_text)
-        if new_audit is not None:
-            audits_dict[chapter_index] = new_audit
-        return new_audit, new_text
+        # 重审结果已写到 result.last_audit；同步到 audits_dict
+        if result.last_audit is not None:
+            audits_dict[chapter_index] = result.last_audit
+        return result.last_audit, result.final_text
 
     def _stepwise_checkpoint(self, group_id: str, group_name: str):
         """
@@ -388,10 +455,9 @@ class DirectorAgent:
         expected = set(_STEPWISE_GROUPS.get(group_id, []))
         missing = expected - current_done
         if missing:
-            # 本组有 phase 没成功——逐个诊断 + 写 error warning + **强制 mark_done 以避免下次循环**。
-            # 设计意图：让用户能继续往下推（不阻塞），但 stdout 和前端 warning 都给出
-            # 具体根因（哪个字段空、当前数量、期望数量），用中文模块名（与左边大纲一致）。
-            from persistence.checkpoint import add_progress_warning, mark_phase_done
+            # 本组有 phase 没成功——逐个诊断 + 写 error warning，然后暂停。
+            # 不能强制 mark_done；否则会留下"进度已完成但 state 产物为空"的脏断点。
+            from persistence.checkpoint import add_progress_warning
             sorted_missing = sorted(missing)
             print(f"\n  ⚠ 阶段组《{group_name}》缺 {len(missing)} 个模块：{_phase_labels_join(sorted_missing)}")
             print(f"  ── 失败诊断 ───────────────────────")
@@ -407,20 +473,28 @@ class DirectorAgent:
                 add_progress_warning(
                     level="error",
                     source=f"phase:{pid}",
-                    message=f"产物未达标 → {diag_body}（已强制标完成，请在 web UI 重建）",
+                    message=f"产物未达标 → {diag_body}（未标完成；修复后会重跑）",
                 )
-            print(f"  ── 已强制标完成（避免死循环）；详情见 web UI 警告徽章 ─")
+            print(f"  ── 未标完成；请修复配置/提示词或重建该模块后继续 ─")
             # 顶层 group 摘要 warning
             add_progress_warning(
                 level="error",
                 source=f"group:{group_id}",
-                message=f"阶段组《{group_name}》：{len(missing)} 个模块产物为空已强制标完成："
+                message=f"阶段组《{group_name}》：{len(missing)} 个模块产物为空，已暂停："
                         + _phase_labels_join(sorted_missing)
                         + "。详情：" + " ; ".join(phase_diagnostics),
             )
-            for pid in sorted_missing:
-                mark_phase_done(pid, self.state)
-            current_done |= missing  # 本次视为已完成
+            save_state(self.state)
+            self._set_current_step(
+                phase=f"⏸ {group_name} 未完成",
+                agent="stepwise",
+                detail=f"阶段组 [{group_id}] 缺产物：{_phase_labels_join(sorted_missing)}",
+            )
+            try:
+                os.remove(project_context.pid_file())
+            except OSError:
+                pass
+            raise SystemExit(0)
         elif not new_phases:
             # 既没缺，又没新增——说明本组本来就早已完成，无需再暂停
             return
@@ -486,6 +560,12 @@ class DirectorAgent:
                     try:
                         vi = int(pid.rsplit("_", 1)[-1])
                         ok = any(p.volume == vi and p.per_chapter for p in self.state.chapter_type_plans)
+                    except Exception:
+                        ok = True
+                elif pid.startswith("4_lifecycle_"):
+                    try:
+                        vi = int(pid.rsplit("_", 1)[-1])
+                        ok = _volume_lifecycle_nodes_assigned(self.state, vi)
                     except Exception:
                         ok = True
                 elif pid.startswith("4_beats_"):
@@ -686,6 +766,40 @@ class DirectorAgent:
         else:
             print("  ✓ [跳过] Phase -1 意图分析已完成")
 
+        # ── Phase -1.5: 主动抽取用户在 intent 里**明确声明的 asset** ──
+        # **独立 phase**（之前嵌在 Phase -1 if 块里——历史 bug：老项目 Phase -1 已 done
+        # 就永远跳过 asset 抽取，导致所有 5/17 前创建的项目 special_abilities 永远是空）
+        # 现在独立后，老项目下次启动会自动补跑。
+        if not is_phase_done("-1.5", p):
+            _section("Phase -1.5: 从意图抽取 asset（intent_asset_extractor）")
+            try:
+                from agents.intent_asset_extractor import extract_assets_from_intent
+                self._set_current_step("Phase -1.5", "IntentAssetExtractor", "抽取用户声明 asset")
+                extract_assets_from_intent(self.state)
+                self._save("power_system.json", self._dump_power_system())
+            except Exception as _e:
+                print(f"  ⚠ intent_asset_extractor 失败（不阻塞）：{type(_e).__name__}: {_e}")
+            mark_phase_done("-1.5", self.state)
+        else:
+            print("  ✓ [跳过] Phase -1.5 意图 asset 抽取已完成")
+
+        # ── Phase -0.7: 补充情节建议（plot_enhancer）──
+        # 主动反问"只看作者写的会不会无聊"，补 3-5 个能让读者翻下一页的钩子。
+        # 失败/产出空都不阻塞下游——concept_pitch 仍按作者原意走。
+        if not is_phase_done("-0.7", p):
+            _section("Phase -0.7: 补充情节建议（plot_enhancer）")
+            try:
+                from agents.plot_enhancer import enhance_plot
+                self._set_current_step("Phase -0.7", "PlotEnhancer",
+                                         "生成补充情节建议供作者审")
+                enhance_plot(self.state)
+                self._save("creative_intent.json", self._dump_creative_intent())
+            except Exception as _e:
+                print(f"  ⚠ plot_enhancer 失败（不阻塞）：{type(_e).__name__}: {_e}")
+            mark_phase_done("-0.7", self.state)
+        else:
+            print("  ✓ [跳过] Phase -0.7 补充情节建议已完成")
+
         # ── Phase 0: 创作立项（卖点 + 套路库 + 文风手册）──
         if not is_phase_done("0", p):
             _section("Phase 0: 立项层（ConceptPitch + TropeLibrary + ToneManual）")
@@ -739,8 +853,13 @@ class DirectorAgent:
             try:
                 from agents.module_reviewer import review_and_regenerate
                 def _re_realm(s):
+                    preserved_special_abilities = []
+                    if s.power_system and s.power_system.special_abilities:
+                        preserved_special_abilities = list(s.power_system.special_abilities)
                     s.power_system = None
                     design_realm_system(s)
+                    if s.power_system and preserved_special_abilities and not s.power_system.special_abilities:
+                        s.power_system.special_abilities = preserved_special_abilities
                 review_and_regenerate(self.state, "1A", _re_realm)
             except Exception as _e:
                 print(f"  ⚠ 1A 模块审核失败：{type(_e).__name__}: {_e}")
@@ -785,6 +904,14 @@ class DirectorAgent:
         if not is_phase_done("1D", p):
             _section("Phase 1-D: 世界观构建")
             build_world(self.state)
+            # 1D 后立刻抽 world_canon——把 world_setting 大段自然语言里的关键锚点
+            # （朝代/年号/根地理/时代定性）抽成机器可读字段，让下游 canon_checker
+            # 能直接比对、不再靠模糊文本匹配。幂等：source_hash 未变化时跳过。
+            try:
+                from agents.world_canon_extractor import extract_world_canon
+                extract_world_canon(self.state)
+            except Exception as _e:
+                print(f"  ⚠ world_canon 抽取失败（不阻塞）：{type(_e).__name__}: {_e}")
             mark_phase_done("1D", self.state)
         else:
             print("  ✓ [跳过] Phase 1-D 世界观已完成")
@@ -874,6 +1001,21 @@ class DirectorAgent:
         else:
             print("  ✓ [跳过] Phase 2-A2 细腻深化已完成")
 
+        # Phase 2-A3: 角色能力档案设计——每个 (角色 × 能力) 独立 LLM 调用，
+        # 形成累积契约防止后续矛盾。范围：主角 + 主要配角 + 反派
+        if not is_phase_done("2A3", p):
+            _section("Phase 2-A3: 核心角色能力档案（每个能力独立深化）")
+            try:
+                from agents.character_ability_designer import design_all_character_abilities
+                from persistence.checkpoint import save_state_section
+                design_all_character_abilities(self.state)
+                save_state_section(self.state, "character_ability_profiles")
+            except Exception as _e:
+                print(f"  ⚠ 2A3 角色能力档案失败（不阻塞后续）：{type(_e).__name__}: {_e}")
+            mark_phase_done("2A3", self.state)
+        else:
+            print("  ✓ [跳过] Phase 2-A3 角色能力档案已完成")
+
         if not is_phase_done("2B", p):
             _section("Phase 2-B: 人物关系网络设计")
             design_relationship_web(self.state)
@@ -894,22 +1036,17 @@ class DirectorAgent:
         else:
             print("  ✓ [跳过] Phase 2-C 特殊能力已完成")
 
-        if not is_phase_done("2D", p):
-            _section("Phase 2-D: 人物心理弧光（每人一条）")
-            design_character_arcs(self.state)
-            self._save("character_arcs.json", self._dump_character_arcs())
-            mark_phase_done_if("2D", self.state,
-                lambda s: bool(s.character_arcs),
-                on_skip_msg="未生成任何 arc")
-        else:
-            print("  ✓ [跳过] Phase 2-D 人物弧光已完成")
-
         if not is_phase_done("2C2", p):
             _section("Phase 2-C2: 能力路线图（金手指 lifecycle + 反向 SP + 标 arc）")
             from agents.ability_roadmap_planner import run_phase_2c2
             run_phase_2c2(self.state)
-            # mark_phase_done 内部走 save_state，整个 state（含 power_system / SP / arcs）一起持久化
-            mark_phase_done("2C2", self.state)
+            # 只有 lifecycle 真写入后才标完成；否则下次启动要重跑，不能留下"完成但空产物"。
+            mark_phase_done_if(
+                "2C2",
+                self.state,
+                _TASK_PREDICATES["2C2"],
+                on_skip_msg="能力路线图产物为空：special_abilities 缺 lifecycle_nodes",
+            )
         else:
             print("  ✓ [跳过] Phase 2-C2 能力路线图已完成")
 
@@ -1103,7 +1240,7 @@ class DirectorAgent:
         self._compile_novel()
         self._save("memory_report.json", self._dump_memory_report())
         print(print(get_foreshadow_status_report(self.state)))
-        _banner(f"《{self.state.title}》创作完成！→ {OUTPUT_DIR}/")
+        _banner(f"《{self.state.title}》创作完成！→ {project_context.project_dir()}/")
 
         # 清 PID 文件 + progress_status（项目状态变回 idle）
         try:
@@ -1132,9 +1269,12 @@ class DirectorAgent:
 
         # Phase 4A: 本卷叙事舞台设计
         stage_phase = f"4_stage_{volume_index}"
+        stage_regenerated = False
         if not is_phase_done(stage_phase, self._progress):
             _section(f"第{volume_index}卷《{vol.title}》叙事舞台设计")
             design_volume_stages(self.state, volume_index)
+            stage_regenerated = True
+            vol.chapter_outlines = []
             self._save(f"vol{volume_index:02d}_stages.json", self._dump_stages(volume_index))
             mark_phase_done_if(stage_phase, self.state,
                 lambda s: any(st.volume == volume_index for st in s.story_stages),
@@ -1159,7 +1299,14 @@ class DirectorAgent:
 
         # Phase 4B: 本卷逐章大纲
         outline_phase = f"4_vol{volume_index}"
-        if not is_phase_done(outline_phase, self._progress):
+        outline_report = validate_volume_outline_structure(self.state, volume_index)
+        outline_done = is_phase_done(outline_phase, self._progress)
+        outline_needs_replan = stage_regenerated or (not outline_done) or (not outline_report.get("ok"))
+        if outline_needs_replan:
+            if outline_done and not stage_regenerated:
+                print(f"  ⚠ 第{volume_index}卷章节大纲结构已过期，自动重建：{outline_report}")
+            elif stage_regenerated and outline_done:
+                print(f"  ℹ 第{volume_index}卷舞台刚重建，自动同步重建章节大纲")
             _section(f"第{volume_index}卷《{vol.title}》章节大纲规划")
             plan_volume_chapters(self.state, volume_index)
             mark_phase_done_if(outline_phase, self.state,
@@ -1189,7 +1336,12 @@ class DirectorAgent:
                 count = assign_chapter_to_lifecycle_nodes(self.state, volume_index, written)
                 if count:
                     print(f"  ✓ 第{volume_index}卷 lifecycle 落章：{count} 个节点")
-                mark_phase_done(lifecycle_phase, self.state)
+                mark_phase_done_if(
+                    lifecycle_phase,
+                    self.state,
+                    lambda s: _volume_lifecycle_nodes_assigned(s, volume_index),
+                    on_skip_msg=f"第{volume_index}卷 lifecycle 节点未落到具体章节",
+                )
             except Exception as _e:
                 print(f"  ⚠ lifecycle 落章失败（不阻塞）：{type(_e).__name__}: {_e}")
         else:
@@ -1244,7 +1396,7 @@ class DirectorAgent:
         if factions_in_vol and factions_in_vol != "本卷无特定势力重点。":
             print(f"  本卷势力：{factions_in_vol[:100]}")
 
-        os.makedirs(f"{OUTPUT_DIR}/vol{volume_index:02d}", exist_ok=True)
+        os.makedirs(f"{project_context.project_dir()}/vol{volume_index:02d}", exist_ok=True)
 
         # 按 stage 切批：每个 stage 写完所有章 → stage 级审查 → 修订循环 → 下一 stage
         stages = self.state.stages_in_volume(volume_index)
@@ -1448,7 +1600,7 @@ class DirectorAgent:
 
         # 2. 删 txt
         for ci in sorted(chapter_to_feedback.keys()):
-            path = f"{OUTPUT_DIR}/vol{volume_index:02d}/chapter_{ci:04d}.txt"
+            path = f"{project_context.project_dir()}/vol{volume_index:02d}/chapter_{ci:04d}.txt"
             if os.path.exists(path):
                 os.remove(path)
 
@@ -1477,7 +1629,45 @@ class DirectorAgent:
     #  章节写作
     # ═══════════════════════════════════════════════════
 
+    def _mark_chapter_as_draft(self, chapter_index: int, path: str, reason: str) -> None:
+        """把已写盘的章节正稿降级为 .draft——任何"未通过定稿前最终校验"的路径都该走这个：
+          1. 磁盘上 chapter_XXXX.txt → chapter_XXXX.txt.draft（旧 .draft 先删避免冲突）
+          2. 从 state.completed_chapters 移除本章（process_chapter 提前 append 的会被 rollback）
+          3. 持久化 state——重启后看到的就是"本章未完成"，会重写
+          4. 写 progress_warning(error) 让 web UI 红字提示
+
+        为什么不在这里 raise：caller 已经准备好抛 ChapterCanonBlockedError /
+        ExternalAIResolutionError 等"语义化异常"，本方法只做"状态清洗"。
+        """
+        try:
+            if os.path.exists(path):
+                draft_path = path + ".draft"
+                if os.path.exists(draft_path):
+                    os.remove(draft_path)
+                os.rename(path, draft_path)
+                print(f"  ❌ 章节正稿 rename → {os.path.basename(draft_path)}（原因：{reason[:60]}）")
+        except Exception as _re:
+            print(f"  ⚠ rename 草稿失败：{type(_re).__name__}: {_re}")
+        self.state.completed_chapters = [
+            c for c in self.state.completed_chapters if c.index != chapter_index
+        ]
+        try:
+            save_state(self.state)
+        except Exception as _se:
+            print(f"  ⚠ rollback 后 save_state 失败：{type(_se).__name__}: {_se}")
+        try:
+            from persistence.checkpoint import add_progress_warning
+            add_progress_warning(
+                level="error",
+                source=f"chapter:{chapter_index}:draft",
+                message=f"第 {chapter_index} 章未通过定稿前校验，已降级为草稿——{reason}",
+            )
+        except Exception as _we:
+            print(f"  ⚠ 写 progress_warning 失败：{type(_we).__name__}: {_we}")
+
     def _write_one_chapter(self, chapter_index: int, volume_index: int):
+        # 每章入口重置——避免上一章的 canon 阻塞状态泄漏到本章
+        self._canon_critical_blocked_info = None
         self._set_current_step(
             phase=f"Phase 5 · V{volume_index}",
             agent="Director",
@@ -1490,6 +1680,7 @@ class DirectorAgent:
 
         vol = self.state.get_volume(volume_index)
         local = chapter_index - vol.chapter_start + 1 if vol else chapter_index
+        path = f"{project_context.project_dir()}/vol{volume_index:02d}/chapter_{chapter_index:04d}.txt"
 
         # 场景蓝图（ChapterPlannerAgent）
         self._set_current_step(agent="ChapterPlanner", detail=f"第 {chapter_index} 章 场景蓝图",
@@ -1565,23 +1756,81 @@ class DirectorAgent:
 
         # ── 真 AI 接入：扫描 [[ASK_AI:能力名|问题]] 占位，用绑定的真 LLM 回答替换 ──
         try:
-            from agents.external_ai_query import resolve_asks_in_chapter, find_asks
+            from agents.external_ai_query import (
+                ExternalAIResolutionError,
+                resolve_asks_in_chapter,
+                find_asks,
+            )
             asks = find_asks(draft)
             if asks:
                 self._set_current_step(agent="ExternalAIQuery",
                                         detail=f"第 {chapter_index} 章 调真 AI 替换 {len(asks)} 个占位",
                                         chapter_index=chapter_index)
                 print(f"  🔌 检测到 {len(asks)} 处主角问真 AI 的占位——开始真发问询")
-                draft, ask_reports = resolve_asks_in_chapter(self.state, draft)
+                draft, ask_reports = resolve_asks_in_chapter(self.state, draft, asks=asks)
+                # 收集"AI 元语言"命中，写 progress warning（不阻塞）——
+                # 这是 canon_checker 抓不到的另一类违规：AI 在回答里说
+                # "我是一个 AI"/"我的训练数据"/"现代社会"等，会破坏穿越/古风沉浸感。
+                ai_meta_warnings: list[str] = []
                 for r in ask_reports:
-                    if r["ok"]:
-                        print(f"    ✓ 《{r['ability']}》→ {r['profile']}: {r['question'][:30]}... "
-                              f"→ 回答 {len(r['answer'])} 字")
-                    else:
-                        print(f"    ⚠ 《{r['ability']}》失败：{r['error'][:80]}")
+                    meta_hits = r.get("meta_hits", []) or []
+                    meta_tag = (
+                        f"  ⚠ 含 AI 元语言: {'/'.join(meta_hits[:3])}" if meta_hits else ""
+                    )
+                    print(f"    ✓ 《{r['ability']}》→ {r['profile']}: {r['question'][:30]}... "
+                          f"→ 回答 {len(r['answer'])} 字{meta_tag}")
+                    if meta_hits:
+                        ai_meta_warnings.append(
+                            f"《{r['ability']}》「{r['question'][:25]}…」答中含 "
+                            f"{'/'.join(meta_hits[:3])}"
+                        )
                 print(f"  ✓ 占位替换完成，正文 {len(draft)} 字符")
+                if ai_meta_warnings:
+                    try:
+                        from persistence.checkpoint import add_progress_warning
+                        add_progress_warning(
+                            level="warn",
+                            source=f"chapter:{chapter_index}:ai_meta",
+                            message=(
+                                f"第 {chapter_index} 章 {len(ai_meta_warnings)} 处真 AI 回答含"
+                                f"元语言/免责声明/时空错乱词（破坏沉浸感）："
+                                + "；".join(ai_meta_warnings[:3])
+                                + "（建议人工检查回答或调整提问让 AI 别走元路径）"
+                            ),
+                        )
+                    except Exception as _e_w:
+                        print(f"  ⚠ 写 progress warning 失败：{type(_e_w).__name__}: {_e_w}")
+        except ExternalAIResolutionError as _e:
+            print(f"  ❌ 真 AI 占位替换失败，本章不定稿：{_e}")
+            try:
+                from persistence.checkpoint import add_progress_warning
+                add_progress_warning(
+                    level="error",
+                    source=f"chapter:{chapter_index}:external_ai",
+                    message=(
+                        f"第 {chapter_index} 章真 AI 占位替换失败，已阻断定稿：{str(_e)[:180]}。"
+                        "请检查 user_models.json 中对应 external_llm_profile 的配置，"
+                        "或先移除/改写本章占位后重写。"
+                    ),
+                )
+            except Exception as _e_w:
+                print(f"  ⚠ 写 progress warning 失败：{type(_e_w).__name__}: {_e_w}")
+            raise
         except Exception as _e:
-            print(f"  ⚠ 真 AI 占位替换失败（保留原占位）：{type(_e).__name__}: {_e}")
+            print(f"  ❌ 真 AI 占位替换异常，本章不定稿：{type(_e).__name__}: {_e}")
+            try:
+                from persistence.checkpoint import add_progress_warning
+                add_progress_warning(
+                    level="error",
+                    source=f"chapter:{chapter_index}:external_ai",
+                    message=(
+                        f"第 {chapter_index} 章真 AI 占位替换异常，已阻断定稿："
+                        f"{type(_e).__name__}: {str(_e)[:160]}"
+                    ),
+                )
+            except Exception as _e_w:
+                print(f"  ⚠ 写 progress warning 失败：{type(_e_w).__name__}: {_e_w}")
+            raise
 
         # ── Phase 5 前置校验（Writer 之后，Critic 之前）──
         # 1. 连续性校验（硬事实/设定/因果）
@@ -1616,12 +1865,19 @@ class DirectorAgent:
                 extra_feedback_parts.append(f"[口吻/{vi.get('character','')}] {problems}")
         extra_feedback = "\n".join(extra_feedback_parts)
 
-        # 审校循环
-        final = draft
-        for rnd in range(1, MAX_REVISION_ROUNDS + 1):
-            self._set_current_step(agent="Critic", detail=f"第 {chapter_index} 章 审校·第 {rnd} 轮",
-                                    chapter_index=chapter_index)
-            review = review_chapter(self.state, directive, final)
+        # 审校循环 —— 切到 core.revise_loop.run_revise_loop 统一框架
+        from core.revise_loop import ReviseConfig, run_revise_loop
+        from agents.chapter_dispatcher import OPENING_CHAPTER_THRESHOLD as _OPEN_TH
+
+        _audit_round = [0]
+        _extra_feedback_box = [extra_feedback]
+
+        def _critic_audit(s, ci, t):
+            _audit_round[0] += 1
+            rnd = _audit_round[0]
+            self._set_current_step(agent="Critic", detail=f"第 {ci} 章 审校·第 {rnd} 轮",
+                                    chapter_index=ci)
+            review = review_chapter(s, directive, t)
             score = review.get("score", 0)
             passed = review.get("passed", False)
             dim = review.get("dim_scores", {})
@@ -1642,14 +1898,16 @@ class DirectorAgent:
                 print(f"    ⚠ 主角：{pc[:60]}")
             if hls:
                 print(f"    ★ 亮点：{hls[0][:60]}")
-            # 首轮审校时，即使 critic pass，只要连续性/口吻有 critical 问题也要强制 revise
-            force_revise = False
+            return review
+
+        def _critic_needs_revise(review):
+            passed = review.get("passed", False)
+            dim = review.get("dim_scores", {})
             force_reasons = []
-            if rnd == 1 and continuity.get("severity") in ("major", "critical"):
-                force_revise = True
+            # 首次 audit 时,连续性 critical 强制 revise
+            if _audit_round[0] == 1 and continuity.get("severity") in ("major", "critical"):
                 force_reasons.append(f"连续性{continuity.get('severity')}")
-            # ── 开篇前 5 章专项门槛：钩子/代入/结构必须都 ≥ 8 ──
-            from agents.chapter_dispatcher import OPENING_CHAPTER_THRESHOLD as _OPEN_TH
+            # 开篇前 N 章专项门槛:钩子/代入/结构必须都 ≥ 8
             if chapter_index <= _OPEN_TH:
                 hook_score = dim.get("hook", 0)
                 char_score = dim.get("character", 0)
@@ -1662,26 +1920,78 @@ class DirectorAgent:
                 if isinstance(struct_score, (int, float)) and struct_score < 8:
                     opening_failures.append(f"结构 {struct_score}<8")
                 if opening_failures:
-                    force_revise = True
                     force_reasons.append(f"开篇专项[{ '/'.join(opening_failures)}]")
-                    extra_feedback = (extra_feedback + "\n" if extra_feedback else "") + (
+                    _extra_feedback_box[0] = (_extra_feedback_box[0] + "\n" if _extra_feedback_box[0] else "") + (
                         f"[开篇章前 {_OPEN_TH} 章专项要求] 钩子/代入/结构都必须 ≥ 8——本章某项不达标："
-                        f"{'/'.join(opening_failures)}。修订时优先：把第一幕的情绪锚点收紧、"
-                        f"让读者更早对主角产生'想跟下去'的情感，章末钩子做得更锐"
+                        f"{'/'.join(opening_failures)}。修订时优先:把第一幕的情绪锚点收紧、"
+                        f"让读者更早对主角产生'想跟下去'的情感,章末钩子做得更锐"
+                    )
+
+            # Batch 4: 黄金三章(卷 1 章 1/2/3)在开篇 ≥8 基础上加专项硬约束
+            # 决定本书前期留存的关键 — 首句勾人 / 小爽 / 大爽 + 拍案级钩子
+            if directive.volume_index == 1 and chapter_index in (1, 2, 3):
+                golden_extra = []
+                if chapter_index == 1:
+                    # 第 1 章:hook + character 必须 ≥ 9(首句勾人 + 主角代入)
+                    if isinstance(hook_score, (int, float)) and hook_score < 9:
+                        golden_extra.append(f"黄金1·钩子 {hook_score}<9")
+                    if isinstance(char_score, (int, float)) and char_score < 9:
+                        golden_extra.append(f"黄金1·代入 {char_score}<9")
+                elif chapter_index == 2:
+                    # 第 2 章:drama ≥ 8(第一个小爽必须落地) + sp_check 不为"未触发"
+                    drama_score = dim.get("drama", 0)
+                    if isinstance(drama_score, (int, float)) and drama_score < 8:
+                        golden_extra.append(f"黄金2·戏剧 {drama_score}<8")
+                    if review.get("sp_check") == "未触发":
+                        golden_extra.append("黄金2·小爽未触发")
+                elif chapter_index == 3:
+                    # 第 3 章:hook ≥ 9(拍案级) + 必有大爽(sp_check 不为"未触发")
+                    if isinstance(hook_score, (int, float)) and hook_score < 9:
+                        golden_extra.append(f"黄金3·钩子 {hook_score}<9")
+                    if review.get("sp_check") == "未触发":
+                        golden_extra.append("黄金3·大爽未触发")
+                if golden_extra:
+                    force_reasons.append(f"黄金三章[{'/'.join(golden_extra)}]")
+                    _extra_feedback_box[0] = (_extra_feedback_box[0] + "\n" if _extra_feedback_box[0] else "") + (
+                        f"[黄金三章专项要求] {'/'.join(golden_extra)}——网文 80% 前期决生死的位置,"
+                        f"必须比一般开篇章更严格。第 1 章重首句勾人和主角代入;第 2 章重小爽兑现;"
+                        f"第 3 章重拍案级钩子和大爽。修订时聚焦本章对应硬约束。"
                     )
             if force_reasons:
                 print(f"  ⚠ 强制重修：{' + '.join(force_reasons)}")
-            if passed and not force_revise:
-                break
+            return (not passed) or bool(force_reasons)
+
+        def _critic_feedback(review, round_idx):
             issues = review.get("issues", [])
             if issues:
                 print(f"  ▶ {issues[0][:60]}")
             fb = review.get("feedback", "请改善章节整体质量")
-            if extra_feedback and rnd == 1:
-                fb = fb + "\n\n[额外校验反馈]\n" + extra_feedback
-                extra_feedback = ""  # 只在第一轮注入一次
-            final = revise_chapter(self.state, directive, final, fb)
-            print(f"  ✓ 修改后 {len(final)} 字")
+            if round_idx == 1 and _extra_feedback_box[0]:
+                fb = fb + "\n\n[额外校验反馈]\n" + _extra_feedback_box[0]
+                _extra_feedback_box[0] = ""  # 只第一轮注入一次
+            return fb
+
+        def _critic_revise(s, d, t, fb):
+            new = revise_chapter(s, d, t, fb)
+            print(f"  ✓ 修改后 {len(new)} 字")
+            return new
+
+        critic_result = run_revise_loop(
+            state=self.state, chapter_index=chapter_index, directive=directive,
+            config=ReviseConfig(
+                label="critic-revise",
+                audit_fn=_critic_audit,
+                needs_revise=_critic_needs_revise,
+                feedback_builder=_critic_feedback,
+                revise_fn=_critic_revise,
+                max_rounds=MAX_REVISION_ROUNDS,
+                min_length_ratio=0.5,  # critic-revise 偏宽松,避免误丢长度变化
+                chapter_path="",        # critic 阶段不写盘 (summary 也还没创建)
+                update_word_count=False,
+            ),
+            initial_text=draft,
+        )
+        final = critic_result.final_text
 
         # ── 设定合规审核（独立 LLM，Gemini Flash Lite）──────────────
         # critic 管"文学质量"；setup_reviewer 管"是否符合设定"——两层正交
@@ -1700,7 +2010,9 @@ class DirectorAgent:
         score = review_result.get("overall_score", 10)
         verdict = review_result.get("verdict", "pass")
         issues = review_result.get("issues", [])
-        print(f"  [审核] 合规分={score}/10｜判定={verdict}｜问题={len(issues)}")
+        review_failed = bool(review_result.get("review_failed"))
+        print(f"  [审核] 合规分={score}/10｜判定={verdict}｜问题={len(issues)}"
+              + ("｜⚠ 审核服务故障" if review_failed else ""))
         critical_issues = [i for i in issues if i.get("severity") == "critical"]
         for ic in critical_issues[:3]:
             print(f"    ! [critical·{ic.get('category','?')}] {ic.get('description','')[:70]}")
@@ -1720,48 +2032,88 @@ class DirectorAgent:
                 source=f"chapter:{chapter_index}",
                 message=f"第 {chapter_index} 章合规审核发现 {len(critical_issues)} 个 critical 问题：{preview}",
             )
+        # 审核服务本身故障——单独写一条 error warning（之前默认 pass 兜底吞掉了这个信号）
+        if review_failed:
+            from persistence.checkpoint import add_progress_warning
+            add_progress_warning(
+                level="error",
+                source=f"chapter:{chapter_index}:reviewer",
+                message=(
+                    f"第 {chapter_index} 章 setup_reviewer 服务故障（{review_result.get('review_failed_reason','')[:80]}）"
+                    "——本章未通过 LLM 合规审核（lifecycle 兜底仍生效）；请检查审核模型/key 后重写本章"
+                ),
+            )
 
-        # 有问题就做局部修——最多 2 轮（首轮修后再审，仍 critical 再修一次）
-        significant_issues = [
-            i for i in issues if i.get("severity") in ("critical", "major")
-        ]
-        for review_round in range(1, 3):  # 1, 2 两轮
-            if not significant_issues:
-                break
-            fix_feedback = reviewer_format_feedback(review_result)
+        # 有问题就做局部修 —— 切到 core.revise_loop 统一框架
+        # 退出语义:首次 audit 看 critical+major 是否触发;后续轮次只看 critical 残留
+        # (审核服务故障时 needs_revise=False,直接退出——服务故障不是章节内容问题,瞎修无意义)
+        _setup_audit_round = [1]  # 已经审过一次了 (review_result 是初次审)
+
+        def _setup_audit(s, ci, t):
+            _setup_audit_round[0] += 1
+            rnd = _setup_audit_round[0]
+            review = setup_review_chapter(s, directive, t)
+            _issues = review.get("issues", []) or []
+            _critical = sum(1 for i in _issues if i.get("severity") == "critical")
+            _major = sum(1 for i in _issues if i.get("severity") == "major")
+            print(f"    [审核] 第 {rnd - 1} 轮后 critical={_critical} major={_major}")
+            return review
+
+        def _setup_needs_revise(review):
+            if review.get("review_failed"):
+                return False
+            _issues = review.get("issues", []) or []
+            if _setup_audit_round[0] == 1:
+                return any(i.get("severity") in ("critical", "major") for i in _issues)
+            return any(i.get("severity") == "critical" for i in _issues)
+
+        def _setup_feedback(review, round_idx):
+            _issues = review.get("issues", []) or []
+            _significant = [i for i in _issues if i.get("severity") in ("critical", "major")]
             self._set_current_step(
                 agent="Writer",
-                detail=f"第 {chapter_index} 章 第{review_round}轮局部修订",
+                detail=f"第 {chapter_index} 章 第{round_idx}轮局部修订",
                 chapter_index=chapter_index,
             )
-            print(f"  [审核] 第 {review_round} 轮：{len(significant_issues)} 个显著问题——局部修订")
-            final = revise_chapter(self.state, directive, final, fix_feedback)
-            print(f"  ✓ 第 {review_round} 轮修订后 {len(final)} 字")
-            # 再审一次——还有 critical 才进入下一轮
-            review_result = setup_review_chapter(self.state, directive, final)
-            issues = review_result.get("issues", []) or []
-            significant_issues = [i for i in issues if i.get("severity") in ("critical", "major")]
-            new_critical = sum(1 for i in issues if i.get("severity") == "critical")
-            print(f"    [审核] 第 {review_round} 轮后 critical={new_critical} major="
-                  f"{sum(1 for i in issues if i.get('severity')=='major')}")
-            # 没 critical 就提前退出（major 一轮够，不再继续修）
-            if new_critical == 0:
-                break
+            print(f"  [审核] 第 {round_idx} 轮：{len(_significant)} 个显著问题——局部修订")
+            return reviewer_format_feedback(review)
+
+        def _setup_revise(s, d, t, fb):
+            new = revise_chapter(s, d, t, fb)
+            print(f"  ✓ 第 {_setup_audit_round[0]} 轮修订后 {len(new)} 字")
+            return new
+
+        setup_result = run_revise_loop(
+            state=self.state, chapter_index=chapter_index, directive=directive,
+            config=ReviseConfig(
+                label="setup-revise",
+                audit_fn=_setup_audit,
+                needs_revise=_setup_needs_revise,
+                feedback_builder=_setup_feedback,
+                revise_fn=_setup_revise,
+                max_rounds=2,
+                min_length_ratio=0.5,
+                chapter_path="",  # 还没写盘
+                update_word_count=False,  # summary 还没创建
+            ),
+            initial_text=final,
+            initial_audit=review_result,
+        )
+        final = setup_result.final_text
 
         # 记忆提取
         self._set_current_step(agent="Memory", detail=f"第 {chapter_index} 章 摘要/记忆提取",
                                 chapter_index=chapter_index)
         summary = process_chapter(self.state, chapter_index, final)
+        # Batch 3:同步 closing_hook_type 到 summary,critic 下章用本卷分布检查 hook 多样性
+        try:
+            bp = getattr(directive, "blueprint", None)
+            hook_spec = getattr(bp, "closing_hook_spec", None) if bp else None
+            if hook_spec is not None and hasattr(hook_spec.type, "value"):
+                summary.closing_hook_type = hook_spec.type.value
+        except Exception:
+            pass
         print(f"  ✓ [{summary.tension.value}] {summary.summary[:55]}...")
-
-        # 节奏分析（统计对话/动作/描写/心理占比+转折密度）
-        self._set_current_step(agent="PacingAnalyzer", detail=f"第 {chapter_index} 章 节奏统计",
-                                chapter_index=chapter_index)
-        pacing = analyze_pacing(self.state, directive, final)
-        attach_pacing_to_summary(summary, pacing)
-        pr = format_pacing_report(pacing)
-        if pr:
-            print(pr)
 
         # 状态集中回写（快照/关系/伏笔激活/世界事件）
         self._set_current_step(agent="StateUpdater", detail=f"第 {chapter_index} 章 状态回写",
@@ -1784,127 +2136,236 @@ class DirectorAgent:
             if not hasattr(self.state, "_canon_audit"):
                 self.state._canon_audit = []
             self.state._canon_audit.append(canon_report)
-            # ── 接通：canon issues 触发 revise（删除/替换未定义引用）──
-            issues = canon_report.get("issues", []) if isinstance(canon_report, dict) else []
-            severe_issues = [i for i in issues if (i.get("severity") if isinstance(i, dict) else getattr(i, "severity", "")) in ("warn", "error")]
-            if severe_issues:
-                # 按 kind 分流：external_ai_no_placeholder 跟"未定义术语"完全是两种问题
-                placeholder_issues = [
-                    i for i in severe_issues
-                    if (i.get("kind") if isinstance(i, dict) else getattr(i, "kind", ""))
-                       == "external_ai_no_placeholder"
-                ]
-                canon_term_issues = [
-                    i for i in severe_issues
-                    if (i.get("kind") if isinstance(i, dict) else getattr(i, "kind", ""))
-                       != "external_ai_no_placeholder"
-                ]
+            # ── 接通：canon issues 触发 revise（循环修订，残留 critical 写 progress warning）──
+            #
+            # 修订策略：最多 CANON_REVISE_MAX_ROUNDS 轮——
+            #   · 每轮按当前残留 issues 重拼 feedback（writer 知道还剩哪些没改对）
+            #   · 跑完再扫一次 canon——critical（error 级）清零就收工，否则下一轮
+            #   · 跑满仍有 critical 残留 → 写 progress warning(level=error)，
+            #     让 web UI 红字警示；不阻塞写盘（保留原稿等用户手动处理）
+            #
+            # 这套循环堵住的洞:原来只跑一轮 revise——LLM 一轮没修对就直接定稿，
+            # external_ai_no_placeholder / 未定义术语 都可能漏过。
+            CANON_REVISE_MAX_ROUNDS = 3
 
-                fb_parts = []
+            def _sev(i): return i.get("severity") if isinstance(i, dict) else getattr(i, "severity", "")
+            def _kind(i): return i.get("kind") if isinstance(i, dict) else getattr(i, "kind", "")
+            def _term(i): return i.get("term", "") if isinstance(i, dict) else getattr(i, "term", "")
+            def _ctx(i):  return i.get("context_snippet", "") if isinstance(i, dict) else getattr(i, "context_snippet", "")
+            def _sug(i):  return i.get("suggestion", "") if isinstance(i, dict) else getattr(i, "suggestion", "")
 
-                # 第一类：占位符违规（writer 自己编了真 AI asset 的回答）
-                if placeholder_issues:
-                    fb_parts.append(
-                        "[占位符违规] 本章 writer 自己编了真 AI asset 的回答——必须改成占位符："
-                    )
-                    for iss in placeholder_issues[:5]:
-                        if isinstance(iss, dict):
-                            term = iss.get("term", "")
-                            ctx = iss.get("context_snippet", "")
-                            sug = iss.get("suggestion", "")
-                        else:
-                            term = getattr(iss, "term", "")
-                            ctx = getattr(iss, "context_snippet", "")
-                            sug = getattr(iss, "suggestion", "")
-                        fb_parts.append(
-                            f"  - 《{term}》在「{ctx[:30]}…」处出现但未用占位符。\n"
-                            f"    必须把「{term}说……/告诉……/浮现答案……」等编造内容，"
-                            f"    改写成 [[ASK_AI:{term}|具体问题]] 占位形式：\n"
+            def _format_canon_feedback(severe_list, round_idx: int) -> str:
+                """把当前轮残留的 severe issues 拼成 writer 能用的修订指令。"""
+                placeholder_iss = [i for i in severe_list if _kind(i) == "external_ai_no_placeholder"]
+                term_iss = [i for i in severe_list if _kind(i) != "external_ai_no_placeholder"]
+                parts = []
+                if round_idx > 1:
+                    parts.append(f"[canon 修订·第 {round_idx} 轮] 上一轮修订后仍有违规——必须彻底修复：")
+                if placeholder_iss:
+                    parts.append("[占位符违规] 本章 writer 自己编了真 AI asset 的回答——必须改成占位符：")
+                    for iss in placeholder_iss[:5]:
+                        t, c, s = _term(iss), _ctx(iss), _sug(iss)
+                        parts.append(
+                            f"  - 《{t}》在「{c[:30]}…」处出现但未用占位符。\n"
+                            f"    必须把「{t}说……/告诉……/浮现答案……」等编造内容，"
+                            f"    改写成 [[ASK_AI:{t}|具体问题]] 占位形式：\n"
                             f"      ① 写主角的触发动作/疑问（不写答案）\n"
-                            f"      ② 写 [[ASK_AI:{term}|具体问题文本]] 占位\n"
+                            f"      ② 写 [[ASK_AI:{t}|具体问题文本]] 占位\n"
                             f"      ③ 写主角看到回答后的反应/思考\n"
-                            f"    占位会在定稿前真发给 LLM 拿真实回答替换。详情：{sug[:100]}"
+                            f"    占位会在定稿前真发给 LLM 拿真实回答替换。详情：{s[:100]}"
                         )
-                    fb_parts.append("")
-
-                # 第二类：未定义术语（writer 凭空编了 canon 没有的能力/地名）
-                if canon_term_issues:
-                    fb_parts.append("[设定护栏] 本章引用了未在 canon 中定义的概念——必须替换或删除：")
-                    for iss in canon_term_issues[:5]:
-                        if isinstance(iss, dict):
-                            kind = iss.get("kind", "")
-                            term = iss.get("term", "")
-                            ctx = iss.get("context_snippet", "")
-                            sug = iss.get("suggestion", "")
-                        else:
-                            kind = getattr(iss, "kind", "")
-                            term = getattr(iss, "term", "")
-                            ctx = getattr(iss, "context_snippet", "")
-                            sug = getattr(iss, "suggestion", "")
-                        fb_parts.append(
-                            f"  - [{kind}] 未定义术语 '{term}'（上下文：{ctx[:30]}）→ {sug[:80]}"
+                    parts.append("")
+                if term_iss:
+                    parts.append("[设定护栏] 本章引用了未在 canon 中定义的概念——必须替换或删除：")
+                    for iss in term_iss[:5]:
+                        parts.append(
+                            f"  - [{_kind(iss)}] 未定义术语 '{_term(iss)}'"
+                            f"（上下文：{_ctx(iss)[:30]}）→ {_sug(iss)[:80]}"
                         )
-                    fb_parts.append(
+                    parts.append(
                         "修订要求：把上述未定义术语全部替换成 canon 中已存在的概念，"
                         "或删除整段；其余原文保留；不要新造任何术语/能力/地名。"
                     )
+                return "\n".join(parts)
 
-                fb = "\n".join(fb_parts)
-                self._set_current_step(agent="Writer", detail=f"第 {chapter_index} 章 canon 修订",
-                                        chapter_index=chapter_index)
-                print(f"  [canon-revise] 触发设定护栏修订（{len(severe_issues)} 处违规）")
-                new_text = revise_chapter(self.state, directive, final, fb)
-                if new_text and len(new_text) >= int(0.7 * len(final)):
-                    with open(path, "w", encoding="utf-8") as fpw:
-                        fpw.write(new_text)
-                    final = new_text
-                    from persistence.state import count_chapter_words
-                    sm = next((c for c in self.state.completed_chapters if c.index == chapter_index), None)
-                    if sm: sm.word_count = count_chapter_words(new_text)
-                    new_canon = check_canon(self.state, chapter_index, new_text)
-                    new_severe = sum(1 for i in (new_canon.get("issues", []) or [])
-                                     if (i.get("severity") if isinstance(i, dict) else getattr(i, "severity", "")) in ("warn", "error"))
-                    print(f"  [canon-revise] 修订后剩 {new_severe} 处违规（前 {len(severe_issues)}）")
-                else:
-                    print(f"  ⚠ canon-revise 输出过短，保留原稿")
+            issues = canon_report.get("issues", []) if isinstance(canon_report, dict) else []
+            severe_issues = [i for i in issues if _sev(i) in ("warn", "error")]
+            initial_severe = len(severe_issues)
+            initial_critical = sum(1 for i in severe_issues if _sev(i) == "error")
+
+            if initial_critical:
+                print(
+                    f"  [canon-revise] 触发设定护栏修订（critical={initial_critical}, "
+                    f"warn={initial_severe - initial_critical}，最多 {CANON_REVISE_MAX_ROUNDS} 轮）"
+                )
+                # ── 切到通用 AuditReviseLoop 框架（A2 抽象）─────────
+                # 把原本 130 行的"audit→拼 feedback→revise→长度兜底→写盘→重扫→重试"
+                # 全部代理给 core.revise_loop.run_revise_loop——细节差异通过 callable 注入
+                from core.revise_loop import ReviseConfig, run_revise_loop
+
+                def _audit_canon(state, ci, text):
+                    """重扫 canon 并把 issues 累计到 _canon_audit；返回 severe issues 列表。"""
+                    rep = check_canon(state, ci, text)
+                    state._canon_audit.append(rep)
+                    return [i for i in (rep.get("issues", []) or []) if _sev(i) in ("warn", "error")]
+
+                def _needs_revise(severe_list):
+                    return any(_sev(i) == "error" for i in (severe_list or []))
+
+                def _build_fb(severe_list, rnd):
+                    return _format_canon_feedback(severe_list, rnd)
+
+                def _revise(state, directive_, text, feedback):
+                    self._set_current_step(
+                        agent="Writer",
+                        detail=f"第 {chapter_index} 章 canon 修订·第 {self._canon_revise_current_round} 轮",
+                        chapter_index=chapter_index,
+                    )
+                    return revise_chapter(state, directive_, text, feedback)
+
+                self._canon_revise_current_round = 0  # 给 _revise 显示用
+
+                def _on_short(rnd, new_len, original_len, streak):
+                    print(f"  ⚠ canon-revise 第 {rnd} 轮输出过短（{new_len}），"
+                          f"丢弃此轮、保留上一版（连续 {streak} 次过短）")
+                    if streak >= 2:
+                        print(f"  ⚠ canon-revise 连续 {streak} 轮过短——LLM 可能异常，提前退出")
+
+                def _on_round_done(rnd, before_severe, after_severe, _new_text):
+                    self._canon_revise_current_round = rnd
+                    crit_now = sum(1 for i in (after_severe or []) if _sev(i) == "error")
+                    warn_now = sum(1 for i in (after_severe or []) if _sev(i) == "warn")
+                    print(f"  [canon-revise·{rnd}] 修订后 critical={crit_now} warn={warn_now}（前 {initial_severe}）")
+
+                def _on_residual(remaining_severe):
+                    rem_crit = [i for i in (remaining_severe or []) if _sev(i) == "error"]
+                    if not rem_crit:
+                        return
+                    preview = "；".join(
+                        f"{_kind(i) or '?'}:{(_term(i) or '?')[:20]}"
+                        for i in rem_crit[:5]
+                    )
+                    reason = (
+                        f"canon-revise 跑满 {CANON_REVISE_MAX_ROUNDS} 轮后仍有 "
+                        f"{len(rem_crit)} 处 critical 违规：{preview}"
+                    )
+                    # 状态清洗：rename .draft + rollback completed_chapters + save_state + warning
+                    self._mark_chapter_as_draft(chapter_index, path, reason=reason)
+                    # 标记 flag——try/except 外面会 raise ChapterCanonBlockedError 真 halt
+                    self._canon_critical_blocked_info = {
+                        "chapter_index": chapter_index,
+                        "count": len(rem_crit),
+                        "preview": preview,
+                        "rounds": CANON_REVISE_MAX_ROUNDS,
+                    }
+                    print(f"  ❌ [canon-revise] 跑满后仍有 {len(rem_crit)} 处 critical——章节拒绝定稿，流程将 halt")
+
+                cfg = ReviseConfig(
+                    label="canon-revise",
+                    audit_fn=_audit_canon,
+                    needs_revise=_needs_revise,
+                    feedback_builder=_build_fb,
+                    revise_fn=_revise,
+                    max_rounds=CANON_REVISE_MAX_ROUNDS,
+                    min_length_ratio=0.7,
+                    max_short_streak=2,
+                    on_short=_on_short,
+                    on_round_done=_on_round_done,
+                    on_residual_critical=_on_residual,
+                    chapter_path=path,
+                    update_word_count=True,
+                )
+                result = run_revise_loop(
+                    state=self.state, chapter_index=chapter_index,
+                    directive=directive, config=cfg,
+                    initial_text=final, initial_audit=severe_issues,
+                )
+                final = result.final_text
+        except ChapterCanonBlockedError:
+            # _on_residual 触发的真阻塞——直接传播，不要被外层 Exception catch 误吞
+            raise
         except Exception as e:
             print(f"  ⚠ 设定护栏检查/修订失败（不影响主流程）：{type(e).__name__}: {e}")
 
-        # 敏感词过滤（定稿前最后一步）
+        # canon-revise 跑满 critical → 已经 rename 草稿 + rollback completed_chapters，
+        # 这里 raise 让整个写作链路 halt（不要继续敏感词/blueprint/mark_done，避免半定稿状态）
+        if getattr(self, "_canon_critical_blocked_info", None):
+            info = self._canon_critical_blocked_info
+            self._canon_critical_blocked_info = None
+            raise ChapterCanonBlockedError(
+                f"第 {info['chapter_index']} 章 canon-revise 跑满 {info['rounds']} 轮仍有 "
+                f"{info['count']} 处 critical 残留（{info['preview']}）——章节未定稿，"
+                "请修复 outline/inspiration/canon 定义后再继续写作"
+            )
+
+        # 敏感词过滤（定稿前最后一步）—— 切到通用 AuditReviseLoop 框架
         sens_report = filter_and_report(final)
         if sens_report["severity"] in ("major", "critical"):
             print(f"  ⚠ 敏感词严重（{sens_report['total_remaining']}处）——触发清理修订")
-            # ── 接通：critical/major 敏感内容触发清理修订 ──
             try:
-                hits = sens_report.get("remaining_hits", []) or []
-                hit_summary = []
-                for h in hits[:10]:
-                    if isinstance(h, dict):
-                        hit_summary.append(f"  - {h.get('word','')} ({h.get('count',1)}次)")
-                    else:
-                        hit_summary.append(f"  - {h}")
-                fb = (
-                    "[敏感词扫描] 本章被检测出严重敏感词——必须改写规避：\n"
-                    f"严重度：{sens_report['severity']}，剩余 {sens_report.get('total_remaining', 0)} 处\n"
-                    "命中清单：\n" + "\n".join(hit_summary) + "\n"
-                    "修订要求：把上述敏感词改写成同义但更含蓄的表达（如：杀→送行/了断；血→红；尸→骸 之类），"
-                    "情节/动作/情感节拍保持不变；其它部分原文保留。"
+                from core.revise_loop import ReviseConfig, run_revise_loop
+
+                def _audit_sens(state, ci, text):
+                    return filter_and_report(text)
+
+                def _needs_revise_sens(rep):
+                    return rep.get("severity") in ("major", "critical")
+
+                def _build_fb_sens(rep, _rnd):
+                    hits = rep.get("remaining_hits", []) or []
+                    hit_summary = []
+                    for h in hits[:10]:
+                        if isinstance(h, dict):
+                            hit_summary.append(f"  - {h.get('word','')} ({h.get('count',1)}次)")
+                        else:
+                            hit_summary.append(f"  - {h}")
+                    return (
+                        "[敏感词扫描] 本章被检测出严重敏感词——必须改写规避：\n"
+                        f"严重度：{rep['severity']}，剩余 {rep.get('total_remaining', 0)} 处\n"
+                        "命中清单：\n" + "\n".join(hit_summary) + "\n"
+                        "修订要求：把上述敏感词改写成同义但更含蓄的表达（如：杀→送行/了断；"
+                        "血→红；尸→骸 之类），情节/动作/情感节拍保持不变；其它部分原文保留。"
+                    )
+
+                def _revise_sens(state, directive_, text, feedback):
+                    self._set_current_step(agent="Writer",
+                                            detail=f"第 {chapter_index} 章 敏感词清理修订",
+                                            chapter_index=chapter_index)
+                    return revise_chapter(state, directive_, text, feedback)
+
+                def _on_round_done_sens(_r, before, after, _new):
+                    print(f"  [sensitive-revise] 修订后剩余 {after.get('total_remaining', 0)} 处"
+                          f"（前 {before.get('total_remaining', 0)}）")
+
+                cfg = ReviseConfig(
+                    label="sensitive-revise",
+                    audit_fn=_audit_sens,
+                    needs_revise=_needs_revise_sens,
+                    feedback_builder=_build_fb_sens,
+                    revise_fn=_revise_sens,
+                    max_rounds=1,                       # 敏感词修订单轮即可
+                    min_length_ratio=0.7,
+                    on_round_done=_on_round_done_sens,
+                    chapter_path=path,
+                    update_word_count=True,
                 )
-                self._set_current_step(agent="Writer", detail=f"第 {chapter_index} 章 敏感词清理修订",
-                                        chapter_index=chapter_index)
-                new_text = revise_chapter(self.state, directive, sens_report["final_content"], fb)
-                if new_text and len(new_text) >= int(0.7 * len(final)):
-                    # 再过一次自动替换 + 扫描
-                    sens_report2 = filter_and_report(new_text)
-                    final = sens_report2["final_content"]
+                # 初次 audit 已经在外层跑过——直接传入避免重复
+                result = run_revise_loop(
+                    state=self.state, chapter_index=chapter_index,
+                    directive=directive, config=cfg,
+                    initial_text=sens_report["final_content"],
+                    initial_audit=sens_report,
+                )
+                # run_revise_loop 内部写盘后 final_text 是 revise_chapter 的输出（未走 filter）；
+                # 拿出后再过一次 filter_and_report 自动替换剩余敏感词，作为最终定稿
+                if result.rounds_accepted > 0:
+                    final_after_filter = filter_and_report(result.final_text)["final_content"]
                     with open(path, "w", encoding="utf-8") as fpw:
-                        fpw.write(final)
-                    from persistence.state import count_chapter_words
-                    sm = next((c for c in self.state.completed_chapters if c.index == chapter_index), None)
-                    if sm: sm.word_count = count_chapter_words(final)
-                    print(f"  [sensitive-revise] 修订后剩余 {sens_report2.get('total_remaining', 0)} 处（前 {sens_report.get('total_remaining', 0)}）")
+                        fpw.write(final_after_filter)
+                    final = final_after_filter
                 else:
-                    print(f"  ⚠ sensitive-revise 输出过短，保留原稿（已自动替换部分）")
+                    # 修订未被接受（如输出过短）——回退到初始自动替换的内容
+                    print(f"  ⚠ sensitive-revise 输出过短或未触发，保留自动替换内容")
                     final = sens_report["final_content"]
             except Exception as _e:
                 print(f"  ⚠ 敏感词清理修订失败：{type(_e).__name__}: {_e}")
@@ -1917,6 +2378,35 @@ class DirectorAgent:
         else:
             final = sens_report["final_content"]
 
+        # canon/setup/sensitive 修订都可能在初稿外部 AI 替换之后又生成新的 [[ASK_AI:...]]。
+        # 最终保存前必须再扫一次；有剩余占位就真发问并替换，失败则阻断定稿。
+        try:
+            from agents.external_ai_query import (
+                ExternalAIResolutionError,
+                find_asks,
+                resolve_asks_in_chapter,
+            )
+            remaining_asks = find_asks(final)
+            if remaining_asks:
+                self._set_current_step(agent="ExternalAI",
+                                       detail=f"第 {chapter_index} 章 最终占位替换",
+                                       chapter_index=chapter_index)
+                print(f"  🔌 最终保存前发现 {len(remaining_asks)} 处 ASK_AI 占位——补跑真 AI 替换")
+                final, ask_reports = resolve_asks_in_chapter(self.state, final, asks=remaining_asks)
+                for r in ask_reports:
+                    print(f"    ✓ 《{r['ability']}》→ {r['profile']}: {r['question'][:30]}... "
+                          f"→ 回答 {len(r['answer'])} 字")
+        except ExternalAIResolutionError as _e:
+            # 真 AI 调用失败（429/超时/无可用 in_story 模型）——之前定稿流程写过的草稿
+            # 磁盘上还在（含 [[ASK_AI:...]] 占位），rename .draft 避免被当成定稿，再把
+            # completed_chapters 里的本章 rollback，保持和 canon-block 一致的语义
+            self._mark_chapter_as_draft(chapter_index, path, reason=f"ASK_AI 替换失败：{_e}")
+            raise
+        except Exception as _e:
+            print(f"  ❌ 最终 ASK_AI 占位替换异常，本章不定稿：{type(_e).__name__}: {_e}")
+            self._mark_chapter_as_draft(chapter_index, path, reason=f"ASK_AI 占位替换异常：{type(_e).__name__}: {_e}")
+            raise
+
         # HITL 关卡：主角跨大境界 / 主要角色死亡 / 主线伏笔回收
         self._maybe_hitl_gates(chapter_index, directive, summary)
 
@@ -1925,8 +2415,7 @@ class DirectorAgent:
         thread = self.state.story_thread
         print(f"  ✓ 故事线索：{thread.protagonist_immediate_goal[:35]} | 开放循环×{len([l for l in thread.open_loops if not l.closed])}")
 
-        # 保存
-        path = f"{OUTPUT_DIR}/vol{volume_index:02d}/chapter_{chapter_index:04d}.txt"
+        # 保存当前定稿；章后审计若再修，会通过 _apply_revision_and_reaudit 覆写同一路径。
         with open(path, "w", encoding="utf-8") as f:
             f.write(final)
 
@@ -1965,9 +2454,6 @@ class DirectorAgent:
                 }
         except Exception as _e:
             print(f"  ⚠ 主角实力日志失败（不影响章节）：{type(_e).__name__}: {_e}")
-
-        # 标记章节完成（写入断点）
-        mark_chapter_done(chapter_index, self.state)
 
         # 章后能力审计 —— 金手指/技能使用合理性
         # 不阻塞主流程：失败只打印，不影响章节保存
@@ -2140,6 +2626,79 @@ class DirectorAgent:
         except Exception as e:
             print(f"  ⚠ 规划反馈失败（不影响章节）：{type(e).__name__}: {e}")
 
+        # 章后 asset 候选追踪——扫正文找疑似新 asset（如剧情自然演化出现的新道具/功法）
+        # 连续 N 章出现 → 写 progress_warning 提示用户决定是否登记。纯规则不调 LLM
+        try:
+            from agents.chapter_asset_tracker import update_asset_candidates
+            _ac_report = update_asset_candidates(self.state, chapter_index, final)
+            if _ac_report["promoted_for_review"]:
+                names = " / ".join(f"《{t}》" for t in _ac_report["promoted_for_review"][:3])
+                print(f"  📦 章后 asset 追踪：{len(_ac_report['promoted_for_review'])} 个新候选触达阈值 {names}")
+        except Exception as _e:
+            print(f"  ⚠ asset 追踪失败（不阻塞）：{type(_e).__name__}: {_e}")
+
+        # 章后能力时间线追踪——LLM 扫正文识别"X 用了 Y 能力"事件
+        # 追加到 state.power_events，更新 character_ability_profiles 的 use_count
+        try:
+            from agents.power_timeline_tracker import (
+                track_chapter_power_events, validate_power_consistency,
+            )
+            track_chapter_power_events(self.state, chapter_index, final)
+            # 跨章一致性校验——用了未登记能力 / 超 ceiling / 矛盾
+            issues = validate_power_consistency(self.state)
+            critical = [i for i in issues if i.get("severity") == "error"]
+            if critical:
+                from persistence.checkpoint import add_progress_warning
+                preview = "；".join(i.get("message", "")[:100] for i in critical[:3])
+                add_progress_warning(
+                    level="error",
+                    source=f"chapter:{chapter_index}:power_consistency",
+                    message=(
+                        f"第 {chapter_index} 章能力一致性 {len(critical)} 处 critical："
+                        f"{preview}（建议人工检查正文 / 补登记角色能力 profile）"
+                    ),
+                )
+                print(f"  ❌ 能力一致性 {len(critical)} 处 critical——已写 progress warning")
+        except Exception as _e:
+            print(f"  ⚠ 能力时间线追踪失败（不阻塞）：{type(_e).__name__}: {_e}")
+
+        # 章后 setup_ledger 提取——LLM 扫正文识别"被嘲讽/被夺/被拒/失败/立誓/欠债"事件
+        # 触发爽点章前 find_callback_seeds 拉出 pending entries 给 writer 当回响锚点
+        try:
+            from agents.setup_ledger import extract_setups_from_chapter
+            _le_report = extract_setups_from_chapter(self.state, chapter_index, final)
+            _new_n = len(_le_report.get("new_entries") or [])
+            _cb_n = len(_le_report.get("callbacks") or [])
+            if _new_n or _cb_n:
+                print(f"  📒 setup ledger: 新增 {_new_n} 条 / 回响 {_cb_n} 条")
+        except Exception as _e:
+            print(f"  ⚠ setup_ledger 失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # Batch 5:章后模拟读者评论(4 类身份 5-10 条) —— 挂到 summary,前端可见
+        try:
+            from agents.comment_simulator import simulate_comments
+            _comments = simulate_comments(self.state, chapter_index, final)
+            if _comments:
+                _sentiments = {}
+                for c in _comments:
+                    _sentiments[c.sentiment] = _sentiments.get(c.sentiment, 0) + 1
+                _sent_summary = " / ".join(f"{k}:{v}" for k, v in _sentiments.items())
+                print(f"  💬 模拟评论 {len(_comments)} 条 [{_sent_summary}]")
+        except Exception as _e:
+            print(f"  ⚠ 模拟评论失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # Batch 6:每 3 章生成一条调味建议 —— 老作者直觉调味,下章 chapter_planner 会用
+        if chapter_index >= 3 and chapter_index % 3 == 0:
+            try:
+                from agents.flavor_advisor import generate_advice
+                _adv = generate_advice(self.state, chapter_index, lookback=3)
+                if _adv:
+                    print(f"  🧂 调味建议(第 {_adv.generated_at_chapter} 章后): {len(_adv.advice)} 条 → {_adv.target_range}")
+                    for _line in _adv.advice[:3]:
+                        print(f"      · {_line[:60]}")
+            except Exception as _e:
+                print(f"  ⚠ 调味建议失败(不阻塞):{type(_e).__name__}: {_e}")
+
         # 长篇连贯性追踪：记录物品使用 + 每 5 章生成一次连贯性报告
         try:
             from agents.long_term_cohesion import update_after_chapter, generate_cohesion_report
@@ -2149,8 +2708,40 @@ class DirectorAgent:
                 dorm = len(cohesion.get("dormant_characters", []))
                 unused = len(cohesion.get("unused_assets", []))
                 overdue = len(cohesion.get("overdue_promises", []))
-                if dorm + unused + overdue > 0:
-                    print(f"  🧭 跨卷连贯性扫描：销号角色 {dorm} 个 / 空挂物品 {unused} 个 / 承诺挂账 {overdue} 条")
+                fw_overdue = len(cohesion.get("overdue_foreshadows", []))
+                lc_missed = len(cohesion.get("missed_lifecycle_nodes", []))
+                sp_missed = len(cohesion.get("missed_satisfaction_points", []))
+                total = dorm + unused + overdue + fw_overdue + lc_missed + sp_missed
+                if total > 0:
+                    print(
+                        f"  🧭 跨卷连贯性扫描：销号 {dorm} / 空挂 {unused} / 承诺挂账 {overdue} / "
+                        f"伏笔挂账 {fw_overdue} / lifecycle 过期 {lc_missed} / 爽点过期 {sp_missed}"
+                    )
+                    # 把汇总写到 progress_warning——前端 ⚠ 徽章自动显示
+                    # （单条同 source 自动去重，每次扫描覆盖旧的）
+                    try:
+                        from persistence.checkpoint import add_progress_warning
+                        bits = []
+                        if dorm: bits.append(f"销号角色 {dorm} 个")
+                        if unused: bits.append(f"空挂物品 {unused} 个")
+                        if overdue: bits.append(f"承诺挂账 {overdue} 条")
+                        if fw_overdue: bits.append(f"伏笔挂账 {fw_overdue} 条")
+                        if lc_missed: bits.append(f"lifecycle 过期 {lc_missed} 个")
+                        if sp_missed: bits.append(f"爽点过期 {sp_missed} 个")
+                        # 等级：lifecycle / 爽点 / 伏笔过期是 critical（破坏读者期待）；
+                        # 销号/空挂/承诺是 warn（节奏感问题）
+                        critical_kinds = fw_overdue + lc_missed + sp_missed
+                        level = "error" if critical_kinds else "warn"
+                        add_progress_warning(
+                            level=level,
+                            source="cohesion",
+                            message=(
+                                f"第 {chapter_index} 章连贯性扫描发现：" + " / ".join(bits)
+                                + "（详见 state.last_cohesion_report；下章 chapter_planner 已收到 hints）"
+                            ),
+                        )
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"  ⚠ 连贯性扫描失败（不影响章节）：{type(e).__name__}: {e}")
 
@@ -2161,29 +2752,31 @@ class DirectorAgent:
         except Exception as e:
             print(f"  ⚠ 感情线追踪失败（不影响章节）：{type(e).__name__}: {e}")
 
-        # 蓝图遵循度审计 —— 蓝图 vs 实际写出的偏差
+        # 后置审计可能再次修改正文；完成前统一刷新章节摘要的标题/字数，避免断点与磁盘正文错位。
         try:
-            from agents.blueprint_compliance import update_chapter_summary as _bp_audit
-            rep = _bp_audit(self.state, chapter_index, getattr(directive, 'blueprint', None), final)
-            if rep:
-                comp = rep["blueprint_compliance"]
-                devs = rep["deviations"]
-                tag = "✓" if comp >= 80 else ("⚠" if comp >= 50 else "✗")
-                print(f"  {tag} 蓝图遵循：{comp}/100 偏差 {len(devs)} 条")
-                for d in devs[:2]:
-                    print(f"      · {d}")
-        except Exception as e:
-            print(f"  ⚠ 蓝图遵循审计失败（不影响章节）：{type(e).__name__}: {e}")
+            from persistence.state import count_chapter_words
+            sm = next((c for c in self.state.completed_chapters if c.index == chapter_index), None)
+            if sm:
+                first_line = (final.split("\n", 1)[0] if final else "").strip()
+                if first_line:
+                    title = first_line
+                    if "章" in title:
+                        title = title.split("章", 1)[-1].strip() or title
+                    sm.title = title
+                sm.word_count = count_chapter_words(final)
+        except Exception as _e:
+            print(f"  ⚠ 最终章节摘要刷新失败（不影响章节）：{type(_e).__name__}: {_e}")
 
-        # 每 N 章跑漂移检测 + 版本快照
-        if DRIFT_CHECK_EVERY_N_CHAPTERS > 0 and chapter_index % DRIFT_CHECK_EVERY_N_CHAPTERS == 0:
-            print(f"\n  ── 漂移检测（窗口 {DRIFT_CHECK_EVERY_N_CHAPTERS} 章）──")
-            drift_report = detect_drift(self.state, window=DRIFT_CHECK_EVERY_N_CHAPTERS)
-            print_drift_report(drift_report)
+        # 每 N 章一次版本快照（删除 drift_detector 后,仅保留 version snapshot)
+        from config import DRIFT_CHECK_EVERY_N_CHAPTERS as _SNAP_EVERY_N
+        if _SNAP_EVERY_N > 0 and chapter_index % _SNAP_EVERY_N == 0:
             version_control.snapshot(
                 self.state, label=f"chapter_{chapter_index}_checkpoint",
                 chapter_index=chapter_index,
             )
+
+        # 所有章后审计/修订/追踪都完成后，才标记章节完成并保存断点。
+        mark_chapter_done(chapter_index, self.state)
 
     def _maybe_hitl_gates(self, chapter_index: int, directive, summary) -> None:
         """在关键节点触发 HITL 暂停点。mode=skip 时完全不触发。"""
@@ -2298,6 +2891,38 @@ class DirectorAgent:
         # 作者章节灵感（从 state.chapter_inspirations 读）
         inspirations = getattr(self.state, "chapter_inspirations", {}) or {}
         directive.user_inspiration = inspirations.get(chapter_index, "").strip()
+        # 爽点 callback 锚点—— sp 触发时,从 setup_ledger 找相关 pending entries
+        # 给 writer 当具体回响素材(原文台词/具体场景)
+        if sp_ids:
+            try:
+                from agents.setup_ledger import (
+                    find_callback_seeds, format_callback_seeds_for_directive,
+                )
+                _seeds = []
+                for sp_id in sp_ids:
+                    _seeds.extend(find_callback_seeds(self.state, sp_id, chapter_index, limit=3))
+                # 去重(同 entry_id 只保留一份)
+                _dedup = {}
+                for _e in _seeds:
+                    _dedup.setdefault(_e.entry_id, _e)
+                directive.callback_seeds = format_callback_seeds_for_directive(
+                    list(_dedup.values())[:5]
+                )
+            except Exception as _e:
+                print(f"  ⚠ callback_seeds 准备失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # Batch 5:读者预期预测 —— 写章前模拟老读者会预期什么
+        # chapter_planner 会对每条预期标 decision(satisfy/reverse/stack),writer 据此调整
+        try:
+            from agents.expectation_manager import predict_reader_expectations
+            expectations = predict_reader_expectations(
+                self.state, chapter_index, lookback=3,
+            )
+            if expectations:
+                directive.reader_expectations = expectations
+                print(f"  🎯 读者预期: {len(expectations)} 条预测")
+        except Exception as _e:
+            print(f"  ⚠ 读者预期预测失败(不阻塞):{type(_e).__name__}: {_e}")
         return directive
 
     def _build_character_states_for_chapter(self, chapter_index: int, volume_index: int) -> dict:
@@ -2507,7 +3132,7 @@ class DirectorAgent:
     # ═══════════════════════════════════════════════════
 
     def _save(self, filename: str, data: dict):
-        with open(f"{PLANS_DIR}/{filename}", "w", encoding="utf-8") as f:
+        with open(f"{project_context.plans_dir()}/{filename}", "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def _get_outline(self, chapter_index: int, volume_index: int) -> dict:
@@ -2519,14 +3144,14 @@ class DirectorAgent:
         return {"index": chapter_index, "goal": "继续推进故事"}
 
     def _compile_novel(self):
-        path = f"{OUTPUT_DIR}/{self.state.title}_完整版.txt"
+        path = f"{project_context.project_dir()}/{self.state.title}_完整版.txt"
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"《{self.state.title}》\n\n题材：{self.state.genre}\n简介：{self.state.theme}\n\n")
             f.write("═" * 50 + "\n\n")
             for vol in self.state.volumes:
                 f.write(f"\n\n{'═'*50}\n第{vol.index}卷  {vol.title}\n{vol.theme}\n{'═'*50}\n\n")
                 for i in range(vol.chapter_start, vol.chapter_end + 1):
-                    p = f"{OUTPUT_DIR}/vol{vol.index:02d}/chapter_{i:04d}.txt"
+                    p = f"{project_context.project_dir()}/vol{vol.index:02d}/chapter_{i:04d}.txt"
                     if os.path.exists(p):
                         with open(p, encoding="utf-8") as cf:
                             f.write(cf.read())
@@ -2546,6 +3171,10 @@ class DirectorAgent:
                 "protagonist_plan": ps.protagonist_realm_plan,
             } if ps else {},
         }
+
+    def _dump_power_system(self) -> dict:
+        ps = self.state.power_system
+        return asdict(ps) if ps else {}
 
     def _dump_factions(self) -> dict:
         return {"factions": [f.to_dict() for f in self.state.factions]}
@@ -2848,7 +3477,7 @@ class DirectorAgent:
         prev_vol_index = volume_index
         if vol and prev < vol.chapter_start:
             prev_vol_index = volume_index - 1
-        path = f"{OUTPUT_DIR}/vol{prev_vol_index:02d}/chapter_{prev:04d}.txt"
+        path = f"{project_context.project_dir()}/vol{prev_vol_index:02d}/chapter_{prev:04d}.txt"
         if not os.path.exists(path):
             return ""
         with open(path, encoding="utf-8") as f:

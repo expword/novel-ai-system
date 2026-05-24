@@ -20,7 +20,9 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-_OVERRIDES_FILE = os.path.join(os.path.dirname(__file__), "prompts", "overrides.json")
+_OVERRIDES_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "prompts", "overrides.json"
+)
 
 # 缓存每个 prompt 的"代码默认值"——必须在应用 override 之前抓取
 _DEFAULTS_CACHE: dict[str, str] = {}
@@ -96,9 +98,6 @@ _REGISTRY_SPEC: list[tuple[str, tuple[str, str, str, str, str]]] = [
     ("人物", ("agents.character_web:SYSTEM", "agents.character_web", "SYSTEM",
               "CharacterWeb System",
               "人物关系网设计——谁和谁什么关系、秘密、演变。")),
-    ("人物", ("agents.character_arc_designer:SYSTEM", "agents.character_arc_designer", "SYSTEM",
-              "CharacterArcDesigner System",
-              "每个角色的心理弧/成长曲线。")),
     ("人物", ("agents.protagonist_journey:SYSTEM", "agents.protagonist_journey", "SYSTEM",
               "ProtagonistJourney System",
               "主角历程三层规划（整体弧/卷里程碑/舞台节拍）。")),
@@ -145,10 +144,6 @@ _REGISTRY_SPEC: list[tuple[str, tuple[str, str, str, str, str]]] = [
     ("审核与校验", ("agents.voice_consistency_checker:SYSTEM", "agents.voice_consistency_checker", "SYSTEM",
                     "VoiceConsistencyChecker System",
                     "角色说话风格一致性校验。")),
-    ("审核与校验", ("agents.pacing_analyzer:SYSTEM", "agents.pacing_analyzer", "SYSTEM",
-                    "PacingAnalyzer System",
-                    "章节节奏统计与偏离分析。")),
-
     # ── 记忆与状态 ──
     ("记忆与状态", ("agents.state_updater:SYSTEM", "agents.state_updater", "SYSTEM",
                     "StateUpdater System",
@@ -187,6 +182,23 @@ _REGISTRY_SPEC: list[tuple[str, tuple[str, str, str, str, str]]] = [
                        "ChapterPlanner System（开篇章变体）",
                        "前 3 章设计蓝图时使用的变体——强调情绪入口/信息稀疏/身份切换整幕。"
                        "可用变量：{genre}")),
+
+    # 黄金三章独立 system —— 卷 1 章 1/2/3 专用,每章独立硬约束
+    ("章节原型·黄金三章", ("agents.prompt_variants:WRITER_SYSTEM_GOLDEN_ONE",
+                            "agents.prompt_variants", "WRITER_SYSTEM_GOLDEN_ONE",
+                            "Writer System(黄金第 1 章)",
+                            "卷 1 第 1 章专用——首句勾人 + 前 200 字出现核心困境/金手指端倪/未解之谜。"
+                            "可用变量：{genre}")),
+    ("章节原型·黄金三章", ("agents.prompt_variants:WRITER_SYSTEM_GOLDEN_TWO",
+                            "agents.prompt_variants", "WRITER_SYSTEM_GOLDEN_TWO",
+                            "Writer System(黄金第 2 章)",
+                            "卷 1 第 2 章专用——第一个小爽 + 主角主动行动 + 埋追读 30 章的新谜团。"
+                            "可用变量：{genre}")),
+    ("章节原型·黄金三章", ("agents.prompt_variants:WRITER_SYSTEM_GOLDEN_THREE",
+                            "agents.prompt_variants", "WRITER_SYSTEM_GOLDEN_THREE",
+                            "Writer System(黄金第 3 章)",
+                            "卷 1 第 3 章专用——第一个大爽 + 主线启动 + 拍案级钩子(reversal/info_reveal/death)。"
+                            "可用变量：{genre}")),
 
     # 章后审计 —— 能力/金手指使用合理性
     ("章后审计", ("agents.ability_auditor:SYSTEM_TEMPLATE",
@@ -227,11 +239,30 @@ _REGISTRY_SPEC: list[tuple[str, tuple[str, str, str, str, str]]] = [
                 "charisma_signature / pov_insertion_volumes / inner_wound。"
                 "可用变量：{genre}。直接更新 state.characters 中反派的字段。")),
 
-    # 蓝图遵循度审计
-    ("章后审计", ("agents.blueprint_compliance:SYSTEM_TEMPLATE",
-                  "agents.blueprint_compliance", "SYSTEM_TEMPLATE",
-                  "BlueprintCompliance System（蓝图遵循度）",
-                  "对比章节蓝图和实际正文，找出执行时的偏差。无变量。")),
+    # 章后审计 —— 爽点 callback 账本(扫稿提取被嘲讽/被夺/被拒/失败/立誓/欠债事件)
+    ("章后审计", ("agents.setup_ledger:SYSTEM",
+                  "agents.setup_ledger", "SYSTEM",
+                  "SetupLedger System(爽点 callback 账本)",
+                  "章后从正文识别被嘲讽/被夺/被拒/失败/立誓事件,触发爽点章前找回响候选给 writer。无变量。")),
+
+    # 章后审计 —— 模拟读者评论(Batch 5)
+    ("章后审计", ("agents.comment_simulator:SYSTEM",
+                  "agents.comment_simulator", "SYSTEM",
+                  "CommentSimulator System(模拟读者评论)",
+                  "章后模拟 5-10 条网文读者评论(追读派/挑刺派/路过派/章评党),挂到 ChapterSummary。无变量。")),
+
+    # 写章前 —— 读者预期管理(Batch 5)
+    ("章节规划", ("agents.expectation_manager:SYSTEM",
+                  "agents.expectation_manager", "SYSTEM",
+                  "ExpectationManager System(读者预期预测)",
+                  "写章前预测 3-5 条读者下意识预期,chapter_planner 必须对每条标 satisfy/reverse/stack 决策。无变量。")),
+
+    # 章后审计 —— 老作者调味直觉(Batch 6)
+    ("章后审计", ("agents.flavor_advisor:SYSTEM",
+                  "agents.flavor_advisor", "SYSTEM",
+                  "FlavorAdvisor System(调味直觉)",
+                  "每 N 章扫一次最近章节,输出'下章应当加什么调味料'。"
+                  "结果加到 state.flavor_advices(滚动 5 条),chapter_planner 注入下章 prompt。无变量。")),
 
     # 章后润色 —— 按审计结果定向修正
     ("章后审计", ("agents.chapter_polisher:SYSTEM_TEMPLATE",

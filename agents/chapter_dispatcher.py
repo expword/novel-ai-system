@@ -174,6 +174,15 @@ def dispatch(state, directive) -> ChapterPromptPlan:
         if primer:
             plan.must_include_hints.append(primer)
 
+        # Batch 4: 卷 1 第 1/2/3 章 → 黄金三章独立 writer system(覆盖 opening 变体)
+        # 网文 80% 决生死的位置,每章有独立硬约束(首句勾人 / 第一个小爽 / 拍案级钩子)
+        vol_idx = getattr(directive, "volume_index", 0)
+        if vol_idx == 1 and ch_idx in (1, 2, 3):
+            _golden = {1: "golden_one", 2: "golden_two", 3: "golden_three"}[ch_idx]
+            plan.writer_variant = _golden
+            plan.archetype = f"golden_three:ch{ch_idx}"
+            plan.signals["golden_three"] = ch_idx
+
     # ── 信号：子类型 ──
     subtype = detect_subgenre(state)
     plan.signals["subgenre"] = subtype

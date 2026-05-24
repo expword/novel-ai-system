@@ -26,12 +26,15 @@ from persistence.state import (
     ProtagonistMilestone, ProtagonistStageBeat, ProtagonistJourney,
     BookStructurePlan,
     ConceptPitch, TropeLibrary, ToneManual, CreativeIntent, IntentRevision,
+    PlotSupplement,
     MasterOutline, CharacterSlot, FactionSkeletonItem, PlotSetpiece,
     Geography, GeoRegion, TransportMode, TravelDistance,
     Timeline, TimelineEvent,
     Economy, Currency, PriceAnchor, WealthTierPoint,
     CharacterArc, ArcTransition,
     RedHerring, ConflictLadder, ConflictEntry, EmotionCurve, EmotionNote,
+    SetupEntry, SetupKind,
+    SimulatedComment, FlavorAdvice,
     TwistLayer, TwistChain, TwistSystem,
     ChapterTypeAssignment, VolumeChapterTypeDistribution,
     ChapterPacingStats, CharacterStateSnapshot, WorldEvent,
@@ -251,6 +254,43 @@ def _load_red_herring(d: dict) -> RedHerring:
         actual_truth=d.get("actual_truth", ""),
         planted=d.get("planted", False),
         debunked=d.get("debunked", False),
+    )
+
+
+def _load_setup_entry(d: dict) -> SetupEntry:
+    """SetupLedger 条目反序列化——容忍旧 state.json 缺该字段(d.get 兜底)。"""
+    return SetupEntry(
+        entry_id=d.get("entry_id", ""),
+        chapter=int(d.get("chapter", 0)),
+        kind=_enum(SetupKind, d.get("kind", "humiliation")),
+        actor=d.get("actor", ""),
+        counterpart=d.get("counterpart", ""),
+        quote=d.get("quote", ""),
+        scene_summary=d.get("scene_summary", ""),
+        suggested_sp_id=d.get("suggested_sp_id", ""),
+        payoff_status=d.get("payoff_status", "pending"),
+        callback_chapter=int(d.get("callback_chapter", -1)),
+        callback_quote=d.get("callback_quote", ""),
+    )
+
+
+def _load_simulated_comment(d: dict) -> SimulatedComment:
+    """模拟读者评论反序列化(Batch 5)。"""
+    return SimulatedComment(
+        reader_type=d.get("reader_type", "路过派"),
+        nickname=d.get("nickname", ""),
+        text=d.get("text", ""),
+        sentiment=d.get("sentiment", "neutral"),
+    )
+
+
+def _load_flavor_advice(d: dict) -> FlavorAdvice:
+    """调味建议反序列化(Batch 6)。"""
+    return FlavorAdvice(
+        generated_at_chapter=int(d.get("generated_at_chapter", 0)),
+        target_range=d.get("target_range", ""),
+        advice=list(d.get("advice", []) or []),
+        reasoning=d.get("reasoning", ""),
     )
 
 
@@ -534,6 +574,14 @@ def _load_chapter_summary(d: dict) -> ChapterSummary:
         sp_triggered=d.get("sp_triggered", []),
         closing_hook=d.get("closing_hook", ""),
         pacing_stats=_load_pacing_stats(ps) if isinstance(ps, dict) else None,
+        # Batch 2/3 扩展字段(d.get 兜底——旧 state.json 缺字段时 default)
+        setup_callbacks_invoked=d.get("setup_callbacks_invoked", []),
+        closing_hook_type=d.get("closing_hook_type", ""),
+        # Batch 5:模拟读者评论
+        simulated_comments=[
+            _load_simulated_comment(c)
+            for c in d.get("simulated_comments", []) if isinstance(c, dict)
+        ],
     )
 
 
@@ -709,6 +757,75 @@ def _load_book_structure(d: dict) -> BookStructurePlan:
     )
 
 
+def _load_learned_ability(d: dict) -> "LearnedAbility":
+    from persistence.state import LearnedAbility
+    if not isinstance(d, dict):
+        return LearnedAbility(name="")
+    return LearnedAbility(
+        name=str(d.get("name") or ""),
+        learned_at_chapter=int(d.get("learned_at_chapter", -1) or -1),
+        source=str(d.get("source") or "")[:60],
+        ceiling=str(d.get("ceiling") or "")[:120],
+        cost=str(d.get("cost") or "")[:120],
+        cooldown=str(d.get("cooldown") or "")[:80],
+        last_used_chapter=int(d.get("last_used_chapter", -1) or -1),
+        use_count=int(d.get("use_count", 0) or 0),
+        notes=str(d.get("notes") or "")[:200],
+    )
+
+
+def _load_power_event(d: dict) -> "PowerEvent":
+    from persistence.state import PowerEvent
+    if not isinstance(d, dict):
+        return PowerEvent(chapter_index=0, user="", ability_name="")
+    return PowerEvent(
+        chapter_index=int(d.get("chapter_index", 0) or 0),
+        user=str(d.get("user") or ""),
+        ability_name=str(d.get("ability_name") or ""),
+        target=str(d.get("target") or "")[:60],
+        effect=str(d.get("effect") or "")[:100],
+        cost_paid=str(d.get("cost_paid") or "")[:80],
+        success=bool(d.get("success", True)),
+        extracted_by=str(d.get("extracted_by") or "auto"),
+    )
+
+
+def _load_character_ability_profile(d: dict) -> "CharacterAbilityProfile":
+    from persistence.state import CharacterAbilityProfile
+    if not isinstance(d, dict):
+        return CharacterAbilityProfile(holder_name="")
+    return CharacterAbilityProfile(
+        holder_name=str(d.get("holder_name") or ""),
+        innate_talents=[str(t) for t in (d.get("innate_talents") or []) if t][:10],
+        learned_abilities=[_load_learned_ability(la) for la in (d.get("learned_abilities") or [])],
+        linked_special_assets=[str(s) for s in (d.get("linked_special_assets") or []) if s][:10],
+        ceiling_now=str(d.get("ceiling_now") or "")[:200],
+        weakness=str(d.get("weakness") or "")[:200],
+        signature_moves=[str(s) for s in (d.get("signature_moves") or []) if s][:8],
+        forbidden_combos=[str(s) for s in (d.get("forbidden_combos") or []) if s][:8],
+        growth_arc_by_volume={int(k): str(v)[:200] for k, v in (d.get("growth_arc_by_volume") or {}).items()
+                              if str(k).lstrip("-").isdigit()},
+        updated_at_chapter=int(d.get("updated_at_chapter", -1) or -1),
+        notes=str(d.get("notes") or "")[:300],
+    )
+
+
+def _load_world_canon(d: dict) -> "WorldCanon":
+    from persistence.state import WorldCanon
+    if not isinstance(d, dict):
+        return WorldCanon()
+    return WorldCanon(
+        dynasty_name=str(d.get("dynasty_name") or ""),
+        era_name=str(d.get("era_name") or ""),
+        region_root=str(d.get("region_root") or ""),
+        epoch_summary=str(d.get("epoch_summary") or ""),
+        canonical_aliases=[str(a) for a in (d.get("canonical_aliases") or []) if a],
+        forbidden_anchors=[str(a) for a in (d.get("forbidden_anchors") or []) if a],
+        extracted_at_phase=str(d.get("extracted_at_phase") or ""),
+        source_hash=str(d.get("source_hash") or ""),
+    )
+
+
 def _load_master_outline(d: dict) -> MasterOutline:
     return MasterOutline(
         generated=bool(d.get("generated", False)),
@@ -783,6 +900,23 @@ def _load_creative_intent(d: dict) -> CreativeIntent:
         dialogue_style_hint=d.get("dialogue_style_hint", ""),
         tone_summary=d.get("tone_summary", ""),
         analyzer_notes=d.get("analyzer_notes", ""),
+        reality_basis=d.get("reality_basis", ""),
+        respect_real_figures=bool(d.get("respect_real_figures", False)),
+        real_persons=list(d.get("real_persons", []) or []),
+        historical_setting=d.get("historical_setting", ""),
+        plot_supplements=[
+            PlotSupplement(
+                name=p.get("name", ""),
+                what=p.get("what", ""),
+                why_engaging=p.get("why_engaging", ""),
+                where_to_inject=p.get("where_to_inject", ""),
+                intensity=p.get("intensity", "mid"),
+                adopted=p.get("adopted", None),
+                notes=p.get("notes", ""),
+            )
+            for p in (d.get("plot_supplements") or [])
+            if isinstance(p, dict)
+        ],
     )
 
 
@@ -1002,6 +1136,16 @@ def _load_state(d: dict) -> NovelState:
     state.trope_library = _load_trope_library(d.get("trope_library", {}))
     state.tone_manual = _load_tone_manual(d.get("tone_manual", {}))
     state.master_outline = _load_master_outline(d.get("master_outline", {}))
+    state.world_canon = _load_world_canon(d.get("world_canon", {}))
+    # 角色能力档案 + 能力时间线
+    state.character_ability_profiles = {
+        name: _load_character_ability_profile(prof)
+        for name, prof in (d.get("character_ability_profiles") or {}).items()
+        if isinstance(prof, dict)
+    }
+    state.power_events = [_load_power_event(e)
+                          for e in (d.get("power_events") or [])
+                          if isinstance(e, dict)]
     state.geography = _load_geography(d.get("geography", {}))
     state.timeline = _load_timeline(d.get("timeline", {}))
     state.economy = _load_economy(d.get("economy", {}))
@@ -1009,6 +1153,9 @@ def _load_state(d: dict) -> NovelState:
     state.conflict_ladder = _load_conflict_ladder(d.get("conflict_ladder", {}))
     state.emotion_curve = _load_emotion_curve(d.get("emotion_curve", {}))
     state.red_herrings = [_load_red_herring(r) for r in d.get("red_herrings", [])]
+    state.setup_ledger = [_load_setup_entry(e) for e in d.get("setup_ledger", [])]
+    state.flavor_advices = [_load_flavor_advice(a) for a in d.get("flavor_advices", []) if isinstance(a, dict)]
+    state.platform_rules = d.get("platform_rules", "") or ""
     state.twist_system = _load_twist_system(d.get("twist_system", {}))
     state.chapter_type_plans = [_load_volume_ctp(p) for p in d.get("chapter_type_plans", [])]
     state.character_state_history = {
@@ -1204,7 +1351,7 @@ def save_state(state: NovelState):
     新格式：分文件存储到 checkpoint/state/ 下每个 section 一个文件。
     老格式：checkpoint/state.json 整体保存（作为备份 + 兼容）。
     """
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(_pctx.checkpoint_dir(), exist_ok=True)
     # 新：分文件
     try:
         from persistence import state_storage
@@ -1212,7 +1359,7 @@ def save_state(state: NovelState):
     except Exception as e:
         # 分文件失败就 fallback 到单文件
         print(f"  [!] 分文件保存失败，fallback 到 state.json：{e}")
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        with open(_pctx.state_file(), "w", encoding="utf-8") as f:
             json.dump(_to_json(state), f, ensure_ascii=False, indent=2)
 
 
@@ -1242,11 +1389,12 @@ def load_state() -> NovelState | None:
     """
     from persistence import state_storage
     from persistence.state import NovelState as _NS
+    state_path = _pctx.state_file()
 
     # 老项目迁移——幂等，若已迁移过直接跳过
-    if os.path.exists(STATE_FILE):
+    if os.path.exists(state_path):
         try:
-            state_storage.migrate_from_single(STATE_FILE)
+            state_storage.migrate_from_single(state_path)
         except Exception as e:
             print(f"  [!] 迁移老 state.json 失败：{e}")
 
@@ -1257,8 +1405,8 @@ def load_state() -> NovelState | None:
             return state
 
     # 2. 老格式兜底
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, encoding="utf-8") as f:
+    if os.path.exists(state_path):
+        with open(state_path, encoding="utf-8") as f:
             return _load_state(json.load(f))
 
     return None
@@ -1268,16 +1416,17 @@ def load_state() -> NovelState | None:
 
 def load_progress() -> dict:
     """返回进度字典：{phases: set[str], chapters: set[int]}"""
-    if not os.path.exists(PROGRESS_FILE):
+    progress_path = _pctx.progress_file()
+    if not os.path.exists(progress_path):
         return {"phases": [], "chapters": []}
-    with open(PROGRESS_FILE, encoding="utf-8") as f:
+    with open(progress_path, encoding="utf-8") as f:
         raw = json.load(f)
     return {"phases": raw.get("phases", []), "chapters": raw.get("chapters", [])}
 
 
 def _save_progress(progress: dict):
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+    os.makedirs(_pctx.checkpoint_dir(), exist_ok=True)
+    with open(_pctx.progress_file(), "w", encoding="utf-8") as f:
         json.dump(progress, f, ensure_ascii=False, indent=2)
 
 
@@ -1449,7 +1598,7 @@ def is_chapter_done(chapter_index: int, progress: dict) -> bool:
 
 def clear_checkpoint():
     """清空所有断点（全新开始时调用）。"""
-    for f in [STATE_FILE, PROGRESS_FILE]:
+    for f in [_pctx.state_file(), _pctx.progress_file()]:
         if os.path.exists(f):
             os.remove(f)
     print("  🗑  断点已清除，从头开始")

@@ -1,4 +1,4 @@
-"""
+﻿"""
 ChapterPlannerAgent — 生成章节场景蓝图（两阶段：规划 + 创意增强）。
 
 核心原则（分形起承转合 + 单主角 + 先答 why/what）：
@@ -16,42 +16,38 @@ from utils.json_utils import repair_json, request_json
 from llm_layer.llm import system_user
 from persistence.state import (
     NovelState, ChapterDirective, ChapterBlueprint, SceneBeat,
-    TensionLevel,
+    TensionLevel, HookType, HookSpec,
 )
 from agents.thread_tracker import format_thread_for_writer
 from agents.protagonist_journey import get_stage_beat_context
 from agents.character_web import get_web_context_for_chapter
 
 
-SYSTEM = """你是资深小说章节设计师，用"起承转合"做分形骨架，但知道好章节的生命在骨架之上——场景要细腻、人物要鲜活、意外要让人心跳。
 
-动笔前先问自己两件事：
-- 为什么这一章非写不可？（purpose）
-- 读者读完这一章带走什么？（expression——情绪/领悟/悬念都行，但要具体）
-答得具体就能往下走；答得虚就再想想。
 
-【连续性铁律】这是本系统最看重的一条——**场景要连贯流动，不要乱切**：
-  · 常规一章只需 2-3 幕；字数多也优先"长幕"而不是"多幕"——一幕 2000-3500 字是常态
-  · 相邻两幕默认是"无缝/软切"：同一场景延续、同一视角、最多过几分钟到几十分钟，不跨日
-  · 真正的"硬切"（换地点、换视角、跨几天）全章最多 1 次，且必须有明确叙事理由（如"镜头切到反派"/"主角赶了两天路后"），否则不要切
-  · 开篇承接上章末尾——不是新起一个场景，而是从上章结尾那个具体画面/动作继续
-  · 每幕之间要想清楚 transition_type（continuous / soft_cut / hard_cut）和衔接方式
 
-别写成"场景 1：训练；场景 2：饭堂；场景 3：操场；场景 4：回寝室"——这是流水账不是小说。应该是"长对峙一幕 + 余波一幕"这种有真正戏剧张力的推进。
+# Tighter default systems. The legacy versions were evocative, but they spent
+# too much budget on advice and too little on verifiable output logic.
+SYSTEM = """你是章节蓝图设计师。输出必须是严格 JSON；你的目标是给 Writer 一个可执行的场景计划，而不是文学评论。
 
-其他原则：
-- 所有场景围绕唯一主角。配角出现时，心里要清楚他此刻对主角起什么作用——照镜子、施压力、给支持、埋伏笔。
-- 每幕要有自己的小戏——一个目标、一个阻碍、一个（有时是意外的）结果。
-- 章内可以有小反转（一幕的走向突然翻面）；该反转就反转，不勉强。
-- 并行线索可以穿插在某一幕里（如对峙时收到消息），而不是单独开新幕。
-- 场景要能启发 writer 写出细腻的文字——提供具体的感官/情绪/关系钩子，而不是流水账。
+设计顺序：
+1. 先确定本章唯一核心变化 chapter_delta：本章结束时，局势/关系/信息/人物认知具体改变了什么。
+2. 再确定 purpose/expression：为什么必须写这一章，读者读完应带走什么感受或悬念。
+3. 再拆 scene_beats：常规 2-3 幕，最多 4 幕；每幕必须有 goal、conflict、outcome。
+4. 最后补 sensory/dialogue/dramatic anchors：只给可落笔的细节，不写泛泛口号。
+
+硬规则：
+- 不凭空新增关键设定、能力、组织、物品、预言或未来事实。
+- 不把并行线索单独切成无关场景；能穿插就穿插。
+- 每幕必须围绕主角视角或主角处境服务，配角不能自成一章。
+- transition_type 必须说明场景如何衔接；hard_cut 全章最多一次。
+- content 字段写具体动作、信息交换、阻碍和结果，不能只写“推进剧情/情绪升温”。
 
 输出严格 JSON。"""
 
-ENHANCER_SYSTEM = """你是小说创意顾问，专门找出章节规划中的"可以更好"之处。
-你的建议应该让章节更出人意料、更有情感冲击、更丰富立体。
-不要颠覆整体方向，只提供可落地的创意补充。
-输出严格JSON。"""
+ENHANCER_SYSTEM = """你是章节蓝图质检员。只做 1-2 个可执行补丁，不能推翻蓝图。
+优先修补：核心变化不清、场景无阻碍、结尾钩子弱、人物选择不成立、能力/设定可能越界。
+输出严格 JSON。"""
 
 
 def build_chapter_blueprint(
@@ -307,8 +303,60 @@ def _plan_structure(
     except Exception as e:
         print(f"  ⚠ alignment hints 失败：{type(e).__name__}: {e}")
 
+    # Batch 5:读者预期块——expectation_manager 写章前预测的读者预期
+    # chapter_planner LLM 必须对每条标 decision (satisfy/reverse/stack)
+    expectations_block = ""
+    try:
+        from agents.expectation_manager import format_expectations_for_prompt
+        _exp_text = format_expectations_for_prompt(directive.reader_expectations or [])
+        if _exp_text:
+            expectations_block = "\n" + _exp_text + "\n"
+    except Exception as _e:
+        print(f"  ⚠ expectations block 失败:{type(_e).__name__}: {_e}")
+
+    # Batch 6:调味建议块——flavor_advisor 每 N 章生成一条,本章读最近的
+    flavor_block = ""
+    try:
+        from agents.flavor_advisor import (
+            get_latest_advice_for_chapter, format_advice_for_prompt,
+        )
+        _advice = get_latest_advice_for_chapter(state, chapter_index)
+        if _advice:
+            flavor_block = "\n" + format_advice_for_prompt(_advice) + "\n"
+    except Exception as _e:
+        print(f"  ⚠ flavor block 失败:{type(_e).__name__}: {_e}")
+
+    # Batch 6:平台 rulebook 块——立项时加载好的 rulebook
+    platform_block = ""
+    try:
+        from utils.platform_rulebook import format_platform_block
+        _pb = format_platform_block(state)
+        if _pb:
+            platform_block = "\n" + _pb + "\n"
+    except Exception:
+        pass
+
+    # 钩子类型分布(Batch 3:防本卷连发同类型钩子导致读者审美疲劳)
+    recent_hook_types = [
+        s.closing_hook_type for s in state.completed_chapters
+        if s.volume_index == directive.volume_index and s.closing_hook_type
+    ][-5:]
+    hook_distribution_hint = ""
+    if recent_hook_types:
+        from collections import Counter
+        _cnt = Counter(recent_hook_types)
+        _overused = [(t, n) for t, n in _cnt.items() if n >= 3]
+        if _overused:
+            _str = " / ".join(f"{t}({n}次)" for t, n in _overused)
+            hook_distribution_hint = (
+                f"\n  ⚠ 本卷最近 5 章钩子分布: {dict(_cnt)}\n"
+                f"  ⚠ 连发钩子类型: {_str}——本章请用其他 hook_type 类型,避免读者审美疲劳"
+            )
+        else:
+            hook_distribution_hint = f"\n  [本卷最近 5 章钩子分布: {dict(_cnt)}]"
+
     prompt = f"""为第{chapter_index}章设计场景蓝图。
-{inspiration_block}{dispatcher_blocks}{dispatcher_hints_block}{reconcile_hints_block}{cohesion_hints_block}{romance_hints_block}{align_hints_block}{feedback_block}
+{inspiration_block}{dispatcher_blocks}{dispatcher_hints_block}{reconcile_hints_block}{cohesion_hints_block}{romance_hints_block}{align_hints_block}{expectations_block}{flavor_block}{platform_block}{feedback_block}
 ═══ 分形结构定位（本章在全书起承转合中的位置链）═══
 {structure_chain}
 
@@ -323,6 +371,7 @@ def _plan_structure(
 {web_context}
 ═══ 本章写作任务 ═══
 大纲目标：{outline_goal}
+{_format_chapter_hook(state, directive)}
 张力：{directive.tension.value} | 节奏：{directive.rhythm.value}（{directive.word_pace}）
 位置：{directive.chapter_position} | {vol_progress}
 情绪基调：{directive.emotional_note}
@@ -355,7 +404,17 @@ def _plan_structure(
 - 每幕 structure_role（起/承/转/合）
 - 每幕以主角为中心；配角出现时在 content 里说明他此刻对主角的作用
 - 并行线索尽量穿插在**同一幕内**（如对话中突然收到消息），不要为此单开新幕
-- closing_hook：章末具体画面（50字，下章的起点）
+- closing_hook_type:从 7 类钩子中选一个(防止本卷连发同类型导致读者审美疲劳)
+  · suspense    悬念钩——话音未落/门外传来声音/某角色突然出现
+  · reversal    反转钩——全章被压制,末句主角微笑/反派惊愕
+  · info_reveal 信息钩——揭露翻盘信息后停笔(身份/秘密/真相)
+  · emotional   情感钩——主角决断/感情转折,后果留下章
+  · physical    物理钩——看到不该出现的人/物/场景(惊鸿一瞥)
+  · death       死亡钩——重要角色突然出事(伤亡/失踪/中毒)
+  · cliff       悬崖钩——字面危险情境(被追/中毒/坠落)
+  {hook_distribution_hint}
+- closing_hook：章末具体画面（50字，下章的起点），必须**落地 closing_hook_type 选的类型**
+  ⚠ 如果上面【本章读者钩子】里的 reader_hook 非空——closing_hook 必须**直接落地它**，不许换内核
 - 戏剧性：如果需要小反转（一幕走向突然翻面），在对应场景标出；不需要就老实推进
 - 细腻线索：每场景可以给 writer 一个细节钩子（一个眼神/小动作/气味/未说出口的话，15 字）
 - 总字数约 {total_words} 字
@@ -410,6 +469,10 @@ def _plan_structure(
     }}
   ],
   "closing_hook": "章末画面（50字）",
+  "closing_hook_type": "suspense|reversal|info_reveal|emotional|physical|death|cliff",
+  "reader_expectation_decisions": [
+    "satisfy|reverse|stack（对每条 reader_expectations 按顺序给一个决策;无 expectations 时填空数组）"
+  ],
   "pacing_note": "整章节奏特点"
 }}
 """
@@ -510,6 +573,28 @@ def _plan_structure(
     ch_purpose = data.get("purpose", "")
     ch_expression = data.get("expression", "")
 
+    # closing_hook_type 解析为 HookSpec(LLM 给的字符串可能不规范——容错)
+    _ht_str = (data.get("closing_hook_type") or "").strip().lower()
+    _hook_spec: HookSpec | None = None
+    if _ht_str:
+        try:
+            _hook_spec = HookSpec(
+                type=HookType(_ht_str),
+                text=str(data.get("closing_hook", ""))[:50],
+            )
+        except ValueError:
+            # LLM 给的 hook type 不在枚举里——降级到 None,critic 会扣 hook_type_compliance
+            print(f"  ⚠ chapter_planner 第 {chapter_index} 章 closing_hook_type={_ht_str!r} 不在 HookType 枚举")
+
+    # Batch 5: reader_expectations 的 decision 回写
+    _decisions = data.get("reader_expectation_decisions") or []
+    if isinstance(_decisions, list) and directive.reader_expectations:
+        _valid = {"satisfy", "reverse", "stack"}
+        for i, exp in enumerate(directive.reader_expectations):
+            if i < len(_decisions):
+                _d = str(_decisions[i] or "").strip().lower()
+                exp.decision = _d if _d in _valid else ""
+
     bp = ChapterBlueprint(
         chapter_index=chapter_index,
         opening_state=data.get("opening_state", thread.scene_end_state[:50] if thread.scene_end_state else "故事继续"),
@@ -520,6 +605,7 @@ def _plan_structure(
         structure_role=ch_structure_role,
         purpose=ch_purpose,
         expression=ch_expression,
+        closing_hook_spec=_hook_spec,
     )
 
     # 回写到 ChapterDirective（供 writer/critic 使用）
@@ -630,6 +716,37 @@ def _enhance_creatively(
 
 # ── 内部辅助 ──────────────────────────────────────────
 
+def _format_chapter_hook(state: NovelState, directive: ChapterDirective) -> str:
+    """从 volume.chapter_outlines 拉本章的 chapter_focus + reader_hook，
+    格式化成 chapter_planner prompt 的硬约束段。
+    """
+    vol = None
+    for v in state.volumes:
+        if v.chapter_start <= directive.chapter_index <= v.chapter_end:
+            vol = v
+            break
+    if not vol:
+        return ""
+    outline = None
+    for o in (vol.chapter_outlines or []):
+        if o.get("index") == directive.chapter_index:
+            outline = o
+            break
+    if not outline:
+        return ""
+    focus = (outline.get("chapter_focus") or "").strip()
+    hook = (outline.get("reader_hook") or "").strip()
+    if not focus and not hook:
+        return ""
+    lines = ["【本章读者钩子（卷规划阶段已审过——这一章你的设计必须命中它们）】"]
+    if focus:
+        lines.append(f"  · 本章一件最重要的事：{focus}")
+    if hook:
+        lines.append(f"  · 让读者翻下一页的钩子：{hook}")
+        lines.append("    ⚠ 你设计的 closing_hook 必须直接落地这条 reader_hook——画面/对话/悬念都行，但不许偷换内核")
+    return "\n".join(lines)
+
+
 def _build_tasks_summary(state: NovelState, directive: ChapterDirective) -> str:
     parts = []
     if directive.must_include:
@@ -677,3 +794,4 @@ def _fallback_beats(directive: ChapterDirective, thread, total_words: int) -> li
                   content=t[1], emotional_shift="", word_quota=t[2])
         for i, t in enumerate(items)
     ]
+

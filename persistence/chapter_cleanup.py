@@ -85,6 +85,15 @@ def cleanup_chapter_state(state: NovelState, to_delete: Iterable[int]) -> None:
         if rh.debunked and rh.debunk_chapter in to_delete:
             rh.debunked = False
 
+    # 7B) setup_ledger:被删章里新建的 entry 直接移除;callback 在被删章发生的回退为 pending
+    if getattr(state, "setup_ledger", None):
+        state.setup_ledger = [e for e in state.setup_ledger if e.chapter not in to_delete]
+        for e in state.setup_ledger:
+            if e.callback_chapter in to_delete:
+                e.payoff_status = "pending"
+                e.callback_chapter = -1
+                e.callback_quote = ""
+
     # 8) 机缘：获得章被删 → 回退到未获得
     for f in state.fortunes:
         if f.obtained and f.actual_chapter in to_delete:

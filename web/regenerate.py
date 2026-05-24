@@ -108,14 +108,38 @@ def regen_volume_outline(volume_index: int) -> dict:
     return {"chapter_outlines": vol.chapter_outlines}
 
 
+def regen_chapter_outline(chapter_index: int) -> dict:
+    """**只重生一章 outline**——保持 stage_id 不变、相邻章不动。
+
+    用例：staleness 警告说"V1Ch9 outline 失效"，重生整 80 章太重，
+    直接调本函数只动一章。返回 {old_goal, new_goal, old_title, new_title} 让 UI 对比。
+    """
+    from agents.volume_planner import regen_one_outline
+    state = _load_or_error()
+    result = regen_one_outline(state, chapter_index)
+    _snapshot_and_save(state, f"regen_outline_ch{chapter_index}")
+    return result
+
+
 def regen_stages(volume_index: int) -> dict:
     from agents.stage_architect import design_volume_stages
+    from agents.volume_planner import plan_volume_chapters
     state = _load_or_error()
+    vol = state.get_volume(volume_index)
+    if not vol:
+        raise RuntimeError(f"第 {volume_index} 卷不存在")
     # 清掉旧舞台
     state.story_stages = [s for s in state.story_stages if s.volume != volume_index]
     design_volume_stages(state, volume_index)
+    # 舞台是章纲的上游。舞台重建后旧 outline 的 stage_id/节奏范围必然失效，
+    # 这里同步重建，避免 UI 保存出“新舞台 + 旧章纲”的混合态。
+    vol.chapter_outlines = []
+    plan_volume_chapters(state, volume_index)
     _snapshot_and_save(state, f"regen_stages_v{volume_index}")
-    return {"stages": [s.__dict__ for s in state.story_stages if s.volume == volume_index]}
+    return {
+        "stages": [s.__dict__ for s in state.story_stages if s.volume == volume_index],
+        "chapter_outlines": vol.chapter_outlines,
+    }
 
 
 def regen_chapter_types(volume_index: int) -> dict:
@@ -129,25 +153,6 @@ def regen_chapter_types(volume_index: int) -> dict:
         "type_distribution": ctp.type_distribution if ctp else {},
         "per_chapter": [a.__dict__ for a in ctp.per_chapter] if ctp else [],
     }
-
-
-def regen_character_arc(name: str) -> dict:
-    from agents.character_arc_designer import _design_one_arc
-    state = _load_or_error()
-    char = state.get_character(name)
-    if not char:
-        raise RuntimeError(f"角色 {name} 不存在")
-    # 清掉旧弧
-    state.character_arcs = [a for a in state.character_arcs if a.character_name != name]
-    volumes_brief = "\n".join(
-        f"第{v.index}卷《{v.title}》[第{v.chapter_start}-{v.chapter_end}章]：{v.theme}"
-        for v in state.volumes
-    )
-    arc = _design_one_arc(state, char, volumes_brief)
-    if arc:
-        state.character_arcs.append(arc)
-    _snapshot_and_save(state, f"regen_arc_{name}")
-    return {"arc": arc.__dict__ if arc else None}
 
 
 def regen_character_refine(name: str) -> dict:
@@ -472,6 +477,8 @@ def regen_all_stages() -> dict:
         characters=lambda s: bool(s.characters),
     )
     state.story_stages = []
+    for vol in state.volumes:
+        vol.chapter_outlines = []
     for vi in range(1, NUM_VOLUMES + 1):
         design_volume_stages(state, vi)
     stats = after_regen_stages(state)
@@ -508,8 +515,8 @@ REGEN_ACTIONS: dict[str, Callable] = {
 # 带参数的动作（单独路由）
 REGEN_ACTIONS_WITH_ARG: dict[str, Callable] = {
     "volume_outline": regen_volume_outline,     # (volume_index: int)
+    "chapter_outline": regen_chapter_outline,   # (chapter_index: int) —— 章级，不动相邻章
     "stages": regen_stages,                      # (volume_index: int)
     "chapter_types": regen_chapter_types,        # (volume_index: int)
-    "character_arc": regen_character_arc,        # (name: str)
     "character_refine": regen_character_refine,  # (name: str)
 }

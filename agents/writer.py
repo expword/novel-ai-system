@@ -1,44 +1,75 @@
-"""
+﻿"""
 WriterAgent — 写章节正文，感知张力/节奏/爽点/伏笔/级别/势力全套系统（按本书题材自适应）。
 """
 from llm_layer.llm import system_user
 from persistence.state import NovelState, ChapterDirective, TensionLevel, RhythmType
 from utils.context_manager import build_writer_context, ContextBuilder, CRITICAL, HIGH, MEDIUM
+from utils.agent_contract import AgentContract, register
 from agents.rhythm_designer import get_rhythm_instruction
 from agents.concept_pitch import format_tone_brief, format_concept_brief
 
 
-SYSTEM_TEMPLATE = """你是一位才华横溢的{genre}小说作家，用极其细腻的笔触写让读者舍不得翻页、每一段都要细细品味的故事。
+# ═══ Agent 形式契约 ═══════════════════════════════════════════════════
+# writer 是消费 state 最多的 agent——下面只列影响"写不写得对"的关键字段。
+# 这套契约会被 canon_checker 在写完正文后自动校验（invariant）。
+CONTRACT = register(AgentContract(
+    name="writer.write_chapter",
+    inputs=[
+        # 章节蓝图 + 上下文
+        "volumes",
+        "characters",
+        "factions",
+        "power_system.special_abilities",
+        "world_canon",                       # 朝代/根地理锚点
+        # 风格 / 节奏
+        "concept_pitch",
+        "tone_manual",
+        "rhythm_plans",
+        # 状态跟踪
+        "character_state_history",
+        "story_thread",
+        "glossary",
+    ],
+    outputs=[
+        # 正文写到磁盘 vol{N}/chapter_{NNNN}.txt（不直接写 state）
+        # 章后由 director 通过 state_updater 把摘要写回 state
+    ],
+    invariants=[
+        # 正文校验由 canon_checker.check_canon 在写完后承担（已在 director.py 接通）
+        # 这里不重复声明，避免双跑
+    ],
+    notes=(
+        "writer 拿到的 prompt 里包含 _format_external_ai_constraint 顶层硬约束——"
+        "真 AI asset 必须用 [[ASK_AI:..|..]] 占位。违规由 canon_checker 抓 critical→canon-revise。"
+    ),
+))
 
-核心铁律：
 
-一、【绝不赶场】节奏要慢。哪怕只是一个眼神、一次推门、一次端杯，都可以铺陈一整段。读者爱读不是为了"接下来发生什么"，是为了"在这一刻感到什么"。每一幕都要让画面在读者眼前停留足够久。
-
-二、【细腻为王】不写抽象情绪词（"紧张/难过/愤怒"），写让读者自己识别情绪的具体身体反应、空间细节、半句未说完的话。捕捉"眼神停留时长 / 指尖温度 / 极细的气味 / 袖口的褶 / 一个被打断的动作"这种粒度。**每章必须找新的具象切入点——避免反复使用同一种身体反应（比如总写指节、总写茶杯）或同一类比喻本体**。如果上章用过"像 X 一样"，本章就换"如 Y 般"换 Y；如果上章靠"指节"传递紧张，本章就靠"喉结上下动一次"或"耳廓发烫"。
-
-三、【铺陈比推进优先】进入高潮前一定要有足够的铺垫——环境、气味、人物内心的细小波动、对话里欲言又止的停顿。一个高潮需要至少三段铺垫托着；一个情感峰值需要前面所有的细节共同塑造。没有铺垫的爽和泪都是假的。
-
-四、【人物戏份要够厚】主角每个重要动作前都有一段内心活动（至少 3-4 句），每个关键对话后都有一段情绪余波（至少 2-3 句）。配角的每次开口都要带出他自己的声音（口癖、节奏、用词），而不是推剧情的工具声。
-
-五、【对话要带血肉】不要"他说…她说…"的乒乓球对话。每一轮对话之间要有动作、表情、沉默、环境的打断；每一句话都要有弦外之音；该停顿的地方用"——""……"让读者自己感受到呼吸。
-
-六、【内心独白必须真实多层】人很少只有一个念头。主角想一件事时，常常是两三个声音在辩驳。这种自我对话能让角色立体。
-
-七、【起承转合只是骨架】你现在写的这一章在哪一段（起/承/转/合）决定文字的气质倾向，但不要被标签束缚——该慢就慢，该静就静，该让读者心疼就让他心疼。
-
-八、【字数必须写足】每个场景要写够指定的 word_quota——不是凑字数，而是让每一幕都有充分的空间呼吸。宁可多写感官细节、内心独白、环境铺陈，也不要草率收场。常规一章 2000-3000 字，给读者一段完整的沉浸体验。
-
-九、【配角服务主角】整本书围绕唯一主角——配角戏份要服务于主角的感受/抉择/变化，而不是自成一体。
-
-十、【反复多样性】同一类描写手法/比喻本体/过渡词在相邻 5 章内尽量不重复。如果【本章禁止出现】中列出"近 N 章已用过的笔触"，必须主动换花样——这才是高质量长篇该有的笔触新鲜度。
-
-十一、【真·AI 占位符——总原则】
-如果【本章能力使用规划】里某条能力标了"🔌 真 AI 接入"（具体占位格式见该处指令），主角"问它"时**必须用那条占位符**——绝对不要自己脑补 AI 的回答内容，回答会由真实大模型生成并替换。一章里最多 2-3 次占位符，写在主角铺陈式触发动作之后、配以反应描写。如果【本章能力使用规划】里没有"🔌 真 AI 接入"标记，本条占位符语法**一律不得使用**。
-
-直接输出正文，以"第X章 标题"开头，不要加任何说明或元评论。"""
 
 
 # 单次 LLM 调用写不完的阈值——超过就按场景分批
+# Override the legacy writer persona with a tighter execution contract.
+# The old prompt was vivid, but it mixed many soft style slogans with hard
+# canon rules. This version keeps the writing brief crisp: constraints first,
+# chapter job second, style last.
+SYSTEM_TEMPLATE = """你是{genre}小说正文写手。你的任务不是解释设定，而是把本章蓝图写成可读、连贯、有戏剧张力的正文。
+
+执行优先级从高到低：
+1. 硬约束：不得违反用户提示中的 [T0]、禁止内容、角色状态、能力状态、真 AI 占位规则。
+2. 本章目标：完成 chapter_delta、must_include、爽点/伏笔/反转/能力规划里明确要求的事件。
+3. 场景蓝图：按 scene_beats 顺序写，保留每幕的目标、阻碍、结果；不得把蓝图变成摘要。
+4. 文风：具体、可感、有动作和潜台词，但不能为了“细腻”拖慢到失去推进。
+
+写法要求：
+- 只输出正文，以“第X章 标题”开头；不要输出说明、分析、清单或元评论。
+- 每一幕都要有明确变化：信息变化、关系变化、局势变化或人物认知变化，至少占其一。
+- 对话要带动作和潜台词，但不要机械地在每句话后塞心理描写。
+- 内心戏服务抉择；环境描写服务压力、遮蔽、反差或伏笔。无功能的铺陈删掉。
+- 不凭空新增能力、组织、历史秘密、关键物品、未来事实；需要新能力必须写清习得过程和代价。
+- 如果绑定了真 AI asset，角色向它提问时只能写 [[ASK_AI:能力名|问题]] 占位，不能替它编答案。
+- 开篇章优先建立困境、人物欲望和读者钩子；中后章优先承接上章、兑现本章变化。
+"""
+
 SCENE_SPLIT_THRESHOLD = 6000
 # 字数兜底：初稿低于 target * MIN_FILL_RATIO 就触发扩写
 MIN_FILL_RATIO = 0.85
@@ -180,11 +211,19 @@ def _write_one_scene(state, directive, beat, system, prev_tail,
     concept_block = format_concept_brief(state)
     structure_section = _format_structure(state, directive)
     character_state_block = _format_character_states(directive)
+    character_ability_block = _format_character_ability_block(state, directive)
     forbidden_block = _format_forbidden(directive)
     rhythm_instruction = get_rhythm_instruction(state, directive.chapter_index)
     context = build_writer_context(state, directive)
     ability_plan_block = _format_ability_plan(directive)
-    external_ai_block = _format_external_ai_constraint(state)
+    callback_seeds_block = _format_callback_seeds_block(directive)
+    external_ai_block = "\n".join(
+        x for x in (
+            _format_reality_basis_constraint(state),
+            _format_external_ai_constraint(state),
+            _format_priority_contract(directive),
+        ) if x
+    )
 
     role_tag = f"[{beat.structure_role}]" if beat.structure_role else ""
     chars_str = "、".join(beat.characters) if beat.characters else "按需"
@@ -280,13 +319,15 @@ def _write_one_scene(state, directive, beat, system, prev_tail,
     plan_blocks = _get_plan_blocks_text(directive)
     prompt = f"""写第{directive.chapter_index}章·第{scene_num}/{total_scenes}幕{role_tag}。
 
+{external_ai_block}
+
+══════════════════════════════════════════════════════════════
+ [T1 本章任务] —— 这一章具体要写什么、推动什么、人物状态是什么
+══════════════════════════════════════════════════════════════
 {inspiration_block}
 {volume_stage_map_block}
 {plan_blocks}
 {feedback_block}
-{tone_block}
-
-{concept_block}
 
 ═══ 本章在全书中的位置 ═══
 {structure_section}
@@ -295,13 +336,28 @@ def _write_one_scene(state, directive, beat, system, prev_tail,
 张力：{directive.tension.value}（{directive.emotional_note}）
 节奏：{rhythm_instruction}
 
+{_format_chapter_hook_for_scene(state, directive, is_last)}
+
 {character_state_block}
+
+{character_ability_block}
 
 {ability_plan_block}
 
-{external_ai_block}
+{callback_seeds_block}
 
 {forbidden_block}
+
+══════════════════════════════════════════════════════════════
+ [T2 风格 / 节奏] —— 笔触取向、文风调子、避免重复
+══════════════════════════════════════════════════════════════
+{tone_block}
+
+{concept_block}
+
+══════════════════════════════════════════════════════════════
+ [T3 本幕蓝图 + 上下文] —— 具体场景骨架与前文衔接
+══════════════════════════════════════════════════════════════
 
 ═══ 本幕蓝图 ═══
 场景类型：{beat.scene_type}
@@ -353,9 +409,17 @@ def _build_full_prompt(state, directive, target_words, prev_tail):
     tone_block = format_tone_brief(state)
     concept_block = format_concept_brief(state)
     character_state_block = _format_character_states(directive)
+    character_ability_block = _format_character_ability_block(state, directive)
     forbidden_block = _format_forbidden(directive)
     ability_plan_block = _format_ability_plan(directive)
-    external_ai_block = _format_external_ai_constraint(state)
+    callback_seeds_block = _format_callback_seeds_block(directive)
+    external_ai_block = "\n".join(
+        x for x in (
+            _format_reality_basis_constraint(state),
+            _format_external_ai_constraint(state),
+            _format_priority_contract(directive),
+        ) if x
+    )
     type_block = f"\n【本章类型】{directive.chapter_type}" if directive.chapter_type else ""
 
     prev_tail_section = ""
@@ -372,13 +436,15 @@ def _build_full_prompt(state, directive, target_words, prev_tail):
     voice_cards_block = _format_voice_cards_for_scene(state, scene_chars)
     prompt = f"""写第{directive.chapter_index}章。
 
+{external_ai_block}
+
+══════════════════════════════════════════════════════════════
+ [T1 本章任务] —— 这一章具体要写什么、推动什么、人物状态是什么
+══════════════════════════════════════════════════════════════
 {inspiration_block}
 {volume_stage_map_block}
 {plan_blocks}
 {feedback_block}
-{tone_block}
-
-{concept_block}
 
 ═══ 本章在全书中的位置 ═══
 {structure_section}
@@ -389,15 +455,33 @@ def _build_full_prompt(state, directive, target_words, prev_tail):
 位置：{directive.chapter_position}
 大纲目标：{outline.get('goal', '继续推进故事')}
 
+═══ 本章读者钩子（[T1] 硬约束——必须命中，不命中视为本章失败）═══
+本章一件最重要的事：{outline.get('chapter_focus') or '（大纲未提供，请你按 goal 自定一件具体的事）'}
+让读者翻下一页的钩子：{outline.get('reader_hook') or '（大纲未提供——你必须在本章末尾自然落出一个具体悬念/画面/对话，让读者忍不住继续读下章）'}
+  ⚠ 这两条是作者审过的硬约束，不许打折扣；不许用"细腻刻画 / 推进剧情"等空话替代。
+
 {character_state_block}
+
+{character_ability_block}
 
 {voice_cards_block}
 
 {ability_plan_block}
 
-{external_ai_block}
+{callback_seeds_block}
 
 {forbidden_block}
+
+══════════════════════════════════════════════════════════════
+ [T2 风格 / 节奏] —— 笔触取向、文风调子
+══════════════════════════════════════════════════════════════
+{tone_block}
+
+{concept_block}
+
+══════════════════════════════════════════════════════════════
+ [T3 场景蓝图 + 上下文] —— 具体场景骨架与前文衔接
+══════════════════════════════════════════════════════════════
 
 ═══ 场景蓝图 ═══
 {blueprint_section}
@@ -484,7 +568,11 @@ def _format_user_inspiration(directive: ChapterDirective) -> str:
         '—— 这是本章写作的【核心目标】，不是普通约束、不是参考、不是"也要体现"的元素之一。\n'
         "整章的情绪走向、场景取舍、人物动作、笔触轻重，都要以**兑现这条灵感**为第一优先。\n"
         "蓝图、张力标签、节奏建议、forbidden 列表都是辅料——它们辅助你把这条灵感写好，\n"
-        "而不是反过来让灵感为它们让路。如果蓝图/上下文与灵感冲突，**以灵感为准**。\n"
+        "而不是反过来让灵感为它们让路。蓝图/上下文与灵感冲突时，**以灵感为准**。\n"
+        "\n"
+        "⚠ 唯一例外：本 prompt 顶部 [T0 铁律] 段高于灵感。冲突时**改写灵感的呈现方式让它合规**\n"
+        "（保留情绪/主轴，调整字面细节），绝不为兑现灵感字面要求而违反铁律。具体范式见 [T0 铁律] 段。\n"
+        "\n"
         "写完之后回头看：读者带走的最强烈感受，必须就是这条灵感想表达的东西。\n"
     )
 
@@ -569,6 +657,20 @@ def _format_user_feedback(directive: ChapterDirective) -> str:
     )
 
 
+def _format_priority_contract(directive: ChapterDirective) -> str:
+    """Compact task contract injected near the top of every writer prompt."""
+    must = " / ".join((directive.must_include or [])[:4]) or "按场景蓝图推进"
+    return (
+        "═══ [T0 执行优先级] ═══\n"
+        "1. 先 obey：禁止内容、角色状态、能力状态、真 AI 占位、已登记 canon。\n"
+        "2. 再 complete：本章必须完成这些事件："
+        f"{must}\n"
+        "3. 再 dramatize：每幕必须写出目标→阻碍→结果，不要把事件压成摘要。\n"
+        "4. 最后 polish：文风细腻但只服务冲突、情绪、伏笔和人物选择。\n"
+        "禁止：凭空新增关键能力/物品/组织/预言/未来事实；禁止输出解释性清单或作者说明。\n"
+    )
+
+
 def _load_writer_system(state: NovelState, directive: ChapterDirective) -> str:
     """
     选择 writer SYSTEM 的变体。
@@ -576,7 +678,11 @@ def _load_writer_system(state: NovelState, directive: ChapterDirective) -> str:
       1. chapter_dispatcher 给出的 variant（按小说子类型/章节位置/功能路由）
          - 非 default 时返回 prompt_variants.WRITER_SYSTEM_<UPPER>（已 format genre）
       2. 兜底：代码内置 SYSTEM_TEMPLATE
+
+    Batch 6:末尾追加 platform_rules 块(立项时按 target_platform 加载好,
+    避免每章每幕重复读 markdown)。
     """
+    base = None
     try:
         from agents.chapter_dispatcher import dispatch, get_writer_system
         plan = dispatch(state, directive)
@@ -584,10 +690,21 @@ def _load_writer_system(state: NovelState, directive: ChapterDirective) -> str:
         if variant != "default":
             sys_text = get_writer_system(variant, genre=state.genre)
             if sys_text:
-                return sys_text
+                base = sys_text
     except Exception as e:
         print(f"[writer] dispatcher/variant 加载失败，走兜底：{type(e).__name__}: {e}")
-    return SYSTEM_TEMPLATE.format(genre=state.genre)
+    if base is None:
+        base = SYSTEM_TEMPLATE.format(genre=state.genre)
+
+    # 追加平台 rulebook(若已加载) —— writer 写章时也参考平台读者偏好
+    try:
+        from utils.platform_rulebook import format_platform_block
+        platform_block = format_platform_block(state)
+        if platform_block:
+            base = base + "\n\n" + platform_block
+    except Exception:
+        pass
+    return base
 
 
 def _format_beat_anchors(beat) -> str:
@@ -672,6 +789,151 @@ def _format_ability_plan(directive: ChapterDirective) -> str:
         return ""
 
 
+def _format_callback_seeds_block(directive: ChapterDirective) -> str:
+    """触发爽点章注入: setup_ledger 找到的具体回响锚点。
+
+    directive.callback_seeds 由 director 在 _generate_directive 内填充
+    (调 setup_ledger.find_callback_seeds + format_callback_seeds_for_directive)。
+    本章无爽点触发时为空,不输出该块。
+    """
+    seeds = getattr(directive, "callback_seeds", None) or []
+    if not seeds:
+        return ""
+    lines = [
+        "═══ ★ 本章爽点 callback 锚点(前面被埋下的具体事件,本章必须有回响)★ ═══"
+    ]
+    for s in seeds[:5]:
+        lines.append(f"  · {s}")
+    lines.append(
+        "—— 写作铁律: 本章至少**精确引用**其中 1 条原文台词或场景细节,"
+        "否则爽点会变成抽象的「主角一掌轰飞反派」,毫无爆发力。"
+    )
+    return "\n".join(lines)
+
+
+def _format_character_ability_block(state, directive: ChapterDirective) -> str:
+    """本章涉及角色的当前能力状态——给 writer 看"他现在能/不能 Y"。
+
+    动态从 state.character_ability_profiles 取（按 character_states.keys 过滤本章人物）。
+    没 profile 的角色不出现——避免 prompt 膨胀。
+    """
+    profiles = getattr(state, "character_ability_profiles", None) or {}
+    if not profiles:
+        return ""
+    # 只列本章涉及人物
+    involved = list((directive.character_states or {}).keys())
+    if not involved:
+        # 兜底：列出所有有 profile 的核心角色
+        involved = list(profiles.keys())
+    lines = ["═══ [T1] 本章涉及角色的当前能力状态（防矛盾用——不能使用未列出的能力）═══"]
+    any_listed = False
+    for name in involved:
+        prof = profiles.get(name)
+        if not prof:
+            continue
+        any_listed = True
+        parts = [f"  · 《{name}》"]
+        if prof.ceiling_now:
+            parts.append(f"当前上限：{prof.ceiling_now}")
+        if prof.weakness:
+            parts.append(f"弱点：{prof.weakness}")
+        # 已学能力——只列**到本章前**已学的（learned_at_chapter <= chapter_index 或 -1）
+        # 负数 = 卷标记（待落章），按 |x| 判断卷
+        ready = []
+        for la in (prof.learned_abilities or []):
+            if la.learned_at_chapter == -1:  # 起手就会
+                ready.append(la)
+            elif la.learned_at_chapter > 0 and la.learned_at_chapter <= directive.chapter_index:
+                ready.append(la)
+            elif la.learned_at_chapter < 0:  # 卷标记
+                vol = -la.learned_at_chapter
+                if vol <= (directive.volume_index or 1):
+                    ready.append(la)
+        if ready:
+            for la in ready[:6]:
+                ab_bits = [f"《{la.name}》"]
+                if la.ceiling:  ab_bits.append(f"上限={la.ceiling[:40]}")
+                if la.cost:     ab_bits.append(f"代价={la.cost[:30]}")
+                if la.cooldown: ab_bits.append(f"冷却={la.cooldown[:30]}")
+                if la.use_count > 0: ab_bits.append(f"已用={la.use_count}次")
+                parts.append("    " + " | ".join(ab_bits))
+        if prof.linked_special_assets:
+            parts.append(f"    持有金手指：{' / '.join(prof.linked_special_assets[:3])}")
+        if prof.forbidden_combos:
+            parts.append(f"    ⚠ 禁忌组合：{' / '.join(prof.forbidden_combos[:3])}")
+        lines.append("\n".join(parts))
+    if not any_listed:
+        return ""
+    lines.append(
+        "  铁律：本章只能使用上面列出的能力——使用未列出的能力 = canon 违规"
+        "（writer 编了能力）→ 触发 canon-revise 反复修订。"
+        "若情节确实需要新能力，让该角色在本章「习得」（描写习得过程），"
+        "下游 power_timeline_tracker 会自动登记。"
+    )
+    return "\n".join(lines)
+
+
+def _format_chapter_hook_for_scene(state, directive, is_last: bool) -> str:
+    """场景级 prompt 注入本章 reader_hook —— 最后一幕特别强调"必须在此幕兑现"。
+
+    放在每个场景 prompt 顶部 [T1 本章气质] 块之后，让 writer 在分幕写作时
+    依然能看到本章整体的"读者钩子"。
+    """
+    try:
+        outline = _get_outline(state, directive.chapter_index)
+    except Exception:
+        return ""
+    focus = (outline.get("chapter_focus") or "").strip()
+    hook = (outline.get("reader_hook") or "").strip()
+    if not focus and not hook:
+        return ""
+    lines = ["═══ 本章读者钩子（[T1] 硬约束）═══"]
+    if focus:
+        lines.append(f"本章一件最重要的事：{focus}")
+    if hook:
+        lines.append(f"让读者翻下一页的钩子：{hook}")
+        if is_last:
+            lines.append("  ⚠ 这是本章最后一幕——上面那条钩子必须在本幕兑现（落到画面/对话/悬念上），"
+                          "不许把它推到下一章。")
+    return "\n".join(lines)
+
+
+def _format_reality_basis_constraint(state) -> str:
+    """故事根基硬约束——决定本书是基于真实历史 / 真实改编 / 完全虚构。
+
+    real_history / real_adapted 模式下，会把"真实人物言行须符合史料"作为
+    顶层硬约束传给 writer；fictional 模式下则明示"自由编撰"，避免下游因
+    题材带"民国/唐/宋"等真实词汇而自我设限。
+
+    与 _format_external_ai_constraint 同等优先级——都属于 [T0 铁律]。
+    """
+    intent = getattr(state, "creative_intent", None)
+    if not intent or not intent.analyzed:
+        return ""
+    try:
+        from agents.intent_analyzer import format_reality_basis_constraints
+        block = format_reality_basis_constraints(intent)
+    except Exception:
+        return ""
+    if not block:
+        return ""
+    # 真实模式下加 writer 写作时的具体执行守则
+    if intent.reality_basis in {"real_history", "real_adapted"}:
+        extra = [
+            "",
+            "═══ [T0 铁律] 真实历史人物言行规约 ═══",
+            "  · 涉及上述真实历史人物时：他们的台词应符合史料记载的口吻、立场、",
+            "    时代用语；不许给他们安排史料明确否定的行为或言论。",
+            "  · 涉及真实历史事件时：时间、地点、参与方、结局须忠于史料；",
+            "    中间过程的细节可以文学化演绎。",
+            "  · 若本章必须出现真实人物且无 100% 史料支撑，请用「合于其性格"
+            "与历史立场的合理推演」原则——而不是脑补。",
+            "  · 自创人物可以与真实人物互动，但不能改写真实人物的核心命运。",
+        ]
+        block = block + "\n" + "\n".join(extra)
+    return block
+
+
 def _format_external_ai_constraint(state) -> str:
     """全书绑了真 LLM 的金手指——无论本章 ability_plan 怎么规划，writer 看到
     这些 asset 名时**必须**用 [[ASK_AI:名|问题]] 占位符，绝不允许自己脑补回答。
@@ -690,18 +952,28 @@ def _format_external_ai_constraint(state) -> str:
     sample = bound[0].name
 
     lines = [
-        "【⚠️ 真·AI 接入 — 顶层硬约束（独立于本章能力规划）】",
+        "═══ [T0 铁律] 真·AI 接入 — 顶层硬约束（违反必触发 canon-revise 反复修订）═══",
         "本书有 asset 绑定了真实大语言模型——主角与它们的任何交互（问答、查询、求建议、",
         "求方案、要数据），正文里**只能用占位符**，绝对不允许 writer 自己编它们说什么。",
         "占位会在章节定稿前被真发给 LLM 拿真实回答替换。writer 既不需要也不应该想象内容。",
         "",
         "═══ 占位符规则（铁律）═══",
-        "  正确：主角铺陈触发动作 → 写 [[ASK_AI:<asset 名>|具体问题]] 占位 → 写主角的反应/思考",
+        "  正确：主角铺陈触发动作 → 写 [[ASK_AI:<asset 名>|具体问题]] 占位 → 写主角等待/屏息/犹疑等反应",
+        "  占位符后面不得继续写答案内容；真实答案会由程序替换，占位符后的自编答案会造成重复和设定污染。",
         f"  示例：[[ASK_AI:{sample}|<具体问题文本——必须是 AI 训练数据可推出的真实知识内容>]]",
         "  违规（必触发审核 critical）：",
         f"    × 「{sample}说：『……』」直接编它的回答",
         f"    × 「{sample}告诉他……」总结它的内容",
         f"    × 「{sample}浮现出建议……」隐式回避占位",
+        "",
+        "  ⚠⚠ 特别强调：**【...】系统弹窗格式同样违规**（network 文本里 LLM 训练数据见过几十万次，",
+        "                  本能模仿——但你**不能写**）：",
+        f"    × 【{sample}·分析完成。债务总额：87,643 两白银。】  ← 看似 AI 输出，实是 writer 编的",
+        f"    × 【{sample}：检测到异常，是否开启分析？】       ← 系统流 UI 弹窗 = 违规",
+        "    × 【宿主，检测到 X，是否进行 Y】              ← 宿主提示风格 = 违规",
+        "    × 【系统提示 / 任务发布 / 扫描中... / 进度 X%】 ← 网文标配 UI 包装 = 违规",
+        "    → 这些都是 writer 编的 AI 输出。AI 真实回答会被替换进 [[ASK_AI:...]] 占位，",
+        f"      **格式是自然语言段落**，不是 UI 弹窗。一章里**绝不能出现【{sample}...】或【系统...】块**。",
         "",
         "═══ 功能边界（铁律——决定问什么能问、问什么不能问）═══",
         "AI 训练数据里**只有现代真实世界的知识**，不知道本书虚构设定的任何专有信息。",
@@ -952,7 +1224,29 @@ def _get_volume_hint(state: NovelState, directive: ChapterDirective) -> str:
     return f"第{vol.index}卷《{vol.title}》第{local}/{vol.total_chapters}章"
 
 
+_HOOK_TYPE_HINTS = {
+    "suspense":    "悬念钩——「话音未落,门外突然」式,留下未解的疑问就停笔",
+    "reversal":    "反转钩——全章被压制,末段反转(主角微笑/反派惊愕),留余震",
+    "info_reveal": "信息钩——揭露翻盘信息后立刻停笔,让读者震惊于真相",
+    "emotional":   "情感钩——主角做出关键情感决断,后果推到下一章",
+    "physical":    "物理钩——看到不该出现的人/物/场景,惊鸿一瞥后停",
+    "death":       "死亡钩——重要角色突然出事(伤亡/失踪/中毒),不交代后续",
+    "cliff":       "悬崖钩——字面意义的危险情境(被追/中毒/坠落)悬而未决",
+}
+
+
 def _get_hook_instruction(directive: ChapterDirective) -> str:
+    # Batch 3:优先按 chapter_planner 分配的 HookType 给具体写作指引
+    bp = getattr(directive, "blueprint", None)
+    hook_spec = getattr(bp, "closing_hook_spec", None) if bp else None
+    if hook_spec is not None:
+        type_str = hook_spec.type.value if hasattr(hook_spec.type, "value") else str(hook_spec.type)
+        if type_str in _HOOK_TYPE_HINTS:
+            preview = (hook_spec.text or "").strip()[:30]
+            tail = f"——目标画面: {preview}" if preview else ""
+            return f"[{type_str} 钩子] {_HOOK_TYPE_HINTS[type_str]}{tail}"
+
+    # 降级:按 chapter_position / tension
     if directive.chapter_position == "卷尾":
         return "必须有震撼的卷尾钩子，让读者立刻翻开下一卷"
     if directive.tension == TensionLevel.PEAK:
@@ -969,3 +1263,4 @@ def _get_outline(state: NovelState, index: int) -> dict:
             if o["index"] == index:
                 return o
     return {"index": index, "goal": "继续推进故事"}
+

@@ -124,6 +124,16 @@ def api_projects_create():
         abort(400, description="必须提供 id 或 title")
     title = body.get("title", pid)
     intent_desc = body.get("intent_description", "").strip()
+    # ── 故事根基（真实 vs 虚构）──
+    reality_basis = (body.get("reality_basis") or "").strip()
+    if reality_basis not in {"real_history", "real_adapted", "fictional", ""}:
+        reality_basis = ""
+    historical_setting = (body.get("historical_setting") or "").strip()
+    real_persons_raw = body.get("real_persons") or []
+    if not isinstance(real_persons_raw, list):
+        real_persons_raw = []
+    real_persons = [str(p).strip() for p in real_persons_raw if str(p).strip()]
+
     try:
         meta = project_manager.create(
             project_id=pid,
@@ -132,6 +142,9 @@ def api_projects_create():
             theme=body.get("theme", ""),
             intent_description=intent_desc,
             num_volumes=int(body.get("num_volumes", 6)),
+            reality_basis=reality_basis,
+            historical_setting=historical_setting,
+            real_persons=real_persons,
         )
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
@@ -297,7 +310,23 @@ def api_stepwise_rollback(project_id):
             target = sn
             break
     if not target:
-        return jsonify({"error": f"未找到 {label_key} 快照"}), 404
+        # 友好诊断：列出已有快照标签，帮用户判断为什么找不到
+        available_labels = sorted({
+            sn.get("label", "")[:60] for sn in snaps if sn.get("label")
+        })
+        diag = (
+            f"未找到回滚快照（label={label_key}）。"
+            "可能原因：① 该阶段是 auto 模式跑完的，没写 stepwise 回滚点；"
+            "② 项目从老版本升级，无快照；③ 快照被清理。"
+        )
+        if available_labels:
+            preview = " / ".join(available_labels[:6])
+            diag += f" 当前可用快照标签（共 {len(available_labels)} 个）：{preview}"
+            if len(available_labels) > 6:
+                diag += f" …等 {len(available_labels) - 6} 个"
+        else:
+            diag += " 当前项目还没有任何快照。"
+        return jsonify({"error": diag}), 404
 
     ts = target["timestamp"]
     try:
@@ -321,7 +350,7 @@ def api_stepwise_rollback(project_id):
 _PHASE_GROUPS = [
     {"id": "G1_intent",          "name": "立项",     "phases": ["-1", "0", "0.5", "0.6"]},
     {"id": "G2_world",           "name": "世界",     "phases": ["1A", "1A2", "1B", "1C", "1D", "1E", "1F", "1G", "1H"]},
-    {"id": "G3_characters",      "name": "人物",     "phases": ["2", "2A2", "2B", "2C", "2D"]},
+    {"id": "G3_characters",      "name": "人物",     "phases": ["2", "2A2", "2B", "2C"]},
     {"id": "G4_plot",            "name": "情节",     "phases": ["3A", "3B", "3B2", "3C", "3D", "3D2", "3E", "3E2", "3E3", "3F", "3G"]},
     {"id": "G5_framework_ready", "name": "框架就绪", "phases": []},  # 虚拟组：前 4 组全完成即满足
 ]
@@ -464,12 +493,124 @@ def _save(state, label="web_edit"):
 
 # SECTION 映射：名字 → (getter, setter)
 # getter(state) 返回可 JSON 化的 dict；setter(state, data) 把 data 写回 state
+_MODULE_FLOW_NODES = [
+    {"id": "creative_intent", "label": "创作意图", "phase": "1 起点", "section": "creative_intent", "regen": None, "desc": "作者输入的题材、主题、受众和禁区，是后续所有模块的根。"},
+    {"id": "concept_pitch", "label": "市场定位", "phase": "2 定位", "section": "concept_pitch", "regen": None, "desc": "把意图收束成卖点、读者承诺和基础商业方向。"},
+    {"id": "trope_library", "label": "套路库", "phase": "2 定位", "section": "trope_library", "regen": "trope_library", "desc": "从定位拆出可反复兑现的类型套路和期待管理。"},
+    {"id": "tone_manual", "label": "文风手册", "phase": "2 定位", "section": "tone_manual", "regen": "tone_manual", "desc": "约束叙述口吻、节奏、句式和文本气质。"},
+    {"id": "book_structure", "label": "全书结构", "phase": "3 蓝图", "section": "book_structure", "regen": "master_outline", "desc": "全书级起承转合和核心命题。"},
+    {"id": "protagonist_journey", "label": "主角历程", "phase": "3 蓝图", "section": "protagonist_journey", "regen": None, "desc": "主角心理、目标和能力成长的长期轨迹。"},
+    {"id": "world", "label": "世界观", "phase": "4 世界", "section": "world", "regen": "world", "desc": "世界规则、基础背景和全局叙事土壤。"},
+    {"id": "power_system", "label": "力量体系", "phase": "4 世界", "section": "power_system", "regen": "power_system", "desc": "能力规则、限制、使用时机和成长机制。"},
+    {"id": "geography", "label": "地理", "phase": "4 世界", "section": "geography", "regen": "geography", "desc": "地图、地区层级和活动空间。"},
+    {"id": "timeline", "label": "时间线", "phase": "4 世界", "section": "timeline", "regen": "timeline", "desc": "历史锚点、时代节点和关键时间背景。"},
+    {"id": "economy", "label": "经济", "phase": "4 世界", "section": "economy", "regen": "economy", "desc": "资源、财富、产业和主角经济曲线。"},
+    {"id": "factions", "label": "势力格局", "phase": "4 世界", "section": "factions", "regen": "factions", "desc": "组织、阵营、利益关系和外部压力。"},
+    {"id": "characters", "label": "人物档案", "phase": "5 人物", "section": "characters", "regen": "characters", "desc": "主角、配角、反派和人物基础设定。"},
+    {"id": "relationship_web", "label": "关系网", "phase": "5 人物", "section": "relationship_web", "regen": "relationships", "desc": "人物之间的表层关系、真实关系和张力。"},
+    {"id": "character_arcs", "label": "心理弧光", "phase": "5 人物", "section": "character_arcs", "regen": None, "desc": "人物长期变化、转折和情感弧线。"},
+    {"id": "volumes", "label": "卷结构/章节大纲", "phase": "6 情节", "section": "volumes", "regen": "volumes", "arg_regen": "volume_outline", "arg_label": "卷", "desc": "卷级目标和每章 outline，是章节生成的主骨架。"},
+    {"id": "lines", "label": "叙事线", "phase": "6 情节", "section": "lines", "regen": "lines", "desc": "主线、支线和卷内线索的推进轨道。"},
+    {"id": "conflict_ladder", "label": "冲突阶梯", "phase": "6 情节", "section": "conflict_ladder", "regen": "conflict_ladder", "desc": "冲突如何逐级升级。"},
+    {"id": "emotion_curve", "label": "情绪曲线", "phase": "6 情节", "section": "emotion_curve", "regen": "emotion_curve", "desc": "读者情绪的高低起伏和释放点。"},
+    {"id": "rhythm_plans", "label": "节奏规划", "phase": "6 情节", "section": "rhythm_plans", "regen": None, "desc": "章节密度、快慢和叙事呼吸。"},
+    {"id": "satisfaction_points", "label": "爽点系统", "phase": "6 情节", "section": "satisfaction_points", "regen": "satisfaction", "desc": "铺垫、兑现和读者满足感节点。"},
+    {"id": "foreshadow_items", "label": "伏笔体系", "phase": "6 情节", "section": "foreshadow_items", "regen": "foreshadows", "desc": "伏笔的埋设、延迟和回收。"},
+    {"id": "twist_system", "label": "反转系统", "phase": "6 情节", "section": "twist_system", "regen": "twists", "desc": "误导、揭示和层级反转。"},
+    {"id": "story_stages", "label": "叙事舞台", "phase": "7 章节", "section": "story_stages", "regen": "stages", "arg_regen": "stages", "arg_label": "卷", "desc": "卷内大段落舞台和每个阶段的叙事任务。"},
+    {"id": "chapter_type_plans", "label": "章节类型", "phase": "7 章节", "section": "chapter_type_plans", "regen": None, "arg_regen": "chapter_types", "arg_label": "卷", "desc": "每章承担的功能类型和节奏职责。"},
+    {"id": "completed_chapters", "label": "已完成章节", "phase": "8 正文", "section": "completed_chapters", "regen": None, "desc": "已经写出的正文与章节摘要。"},
+]
+
+_MODULE_FLOW_EDGES = [
+    ("creative_intent", "concept_pitch"),
+    ("concept_pitch", "trope_library"),
+    ("concept_pitch", "tone_manual"),
+    ("concept_pitch", "book_structure"),
+    ("concept_pitch", "world"),
+    ("book_structure", "protagonist_journey"),
+    ("book_structure", "volumes"),
+    ("world", "power_system"),
+    ("world", "geography"),
+    ("world", "timeline"),
+    ("world", "economy"),
+    ("world", "factions"),
+    ("power_system", "characters"),
+    ("power_system", "protagonist_journey"),
+    ("geography", "characters"),
+    ("timeline", "characters"),
+    ("economy", "characters"),
+    ("factions", "characters"),
+    ("characters", "relationship_web"),
+    ("characters", "character_arcs"),
+    ("relationship_web", "character_arcs"),
+    ("relationship_web", "lines"),
+    ("character_arcs", "lines"),
+    ("protagonist_journey", "lines"),
+    ("volumes", "lines"),
+    ("volumes", "story_stages"),
+    ("lines", "conflict_ladder"),
+    ("lines", "emotion_curve"),
+    ("lines", "rhythm_plans"),
+    ("lines", "satisfaction_points"),
+    ("lines", "foreshadow_items"),
+    ("lines", "twist_system"),
+    ("conflict_ladder", "story_stages"),
+    ("emotion_curve", "story_stages"),
+    ("rhythm_plans", "story_stages"),
+    ("satisfaction_points", "story_stages"),
+    ("foreshadow_items", "story_stages"),
+    ("twist_system", "story_stages"),
+    ("story_stages", "chapter_type_plans"),
+    ("story_stages", "volumes"),
+    ("chapter_type_plans", "completed_chapters"),
+    ("volumes", "completed_chapters"),
+    ("tone_manual", "completed_chapters"),
+    ("power_system", "completed_chapters"),
+    ("relationship_web", "completed_chapters"),
+    ("lines", "completed_chapters"),
+]
+
+
+def _module_flow_payload(_state=None):
+    upstream: dict[str, list[str]] = {n["id"]: [] for n in _MODULE_FLOW_NODES}
+    downstream: dict[str, list[str]] = {n["id"]: [] for n in _MODULE_FLOW_NODES}
+    for src, dst in _MODULE_FLOW_EDGES:
+        downstream.setdefault(src, []).append(dst)
+        upstream.setdefault(dst, []).append(src)
+
+    nodes = []
+    for node in _MODULE_FLOW_NODES:
+        item = dict(node)
+        regen = item.get("regen")
+        arg_regen = item.get("arg_regen")
+        item["upstream"] = upstream.get(item["id"], [])
+        item["downstream"] = downstream.get(item["id"], [])
+        item["can_rebuild"] = bool(
+            (regen and regen in regen_mod.REGEN_ACTIONS)
+            or (arg_regen and arg_regen in regen_mod.REGEN_ACTIONS_WITH_ARG)
+        )
+        item["rebuild_mode"] = "arg" if arg_regen and arg_regen in regen_mod.REGEN_ACTIONS_WITH_ARG else ("direct" if regen and regen in regen_mod.REGEN_ACTIONS else "")
+        item["rebuild_action"] = arg_regen if item["rebuild_mode"] == "arg" else (regen or "")
+        nodes.append(item)
+
+    return {
+        "nodes": nodes,
+        "edges": [{"from": src, "to": dst} for src, dst in _MODULE_FLOW_EDGES],
+        "default_arg": 1,
+    }
+
+
 def _section_map():
     return {
+        "module_flow": (
+            lambda s: _module_flow_payload(s),
+            None,
+        ),
         # Phase -1
         "creative_intent": (
-            lambda s: s.creative_intent.__dict__,
-            lambda s, d: _replace_dataclass(s.creative_intent, d),
+            lambda s: _dump_creative_intent_for_api(s.creative_intent),
+            lambda s, d: _replace_creative_intent(s.creative_intent, d),
         ),
         # Phase 0
         "concept_pitch": (
@@ -612,10 +753,131 @@ def _section_map():
             None,
         ),
         "completed_chapters": (
-            lambda s: [_summary_to_dict(c) for c in s.completed_chapters],
+            lambda s: _completed_chapters_with_drafts(s),
             None,
         ),
     }
+
+
+def _chapter_volume_index(state, index: int) -> int:
+    if state and state.volumes:
+        for v in state.volumes:
+            if v.chapter_start <= index <= v.chapter_end:
+                return v.index
+    return 0
+
+
+def _chapter_title_from_text(text: str, index: int) -> str:
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line:
+            return line[:60]
+    return f"第{index}章"
+
+
+def _chapter_index_from_path(path: str):
+    m = _re.search(r"chapter_(\d{4})\.txt(?:\.draft)?$", os.path.basename(path))
+    return int(m.group(1)) if m else None
+
+
+def _chapter_candidates(project_root_abs: str, state, index: int, *, include_draft: bool = True, prefer_draft: bool = False):
+    import glob as _glob
+
+    chapter_fname = f"chapter_{index:04d}.txt"
+    names = [chapter_fname + ".draft", chapter_fname] if (include_draft and prefer_draft) else [chapter_fname]
+    if include_draft and not prefer_draft:
+        names.append(chapter_fname + ".draft")
+
+    candidates = []
+    vol_idx = _chapter_volume_index(state, index)
+    if vol_idx > 0:
+        for name in names:
+            candidates.append(os.path.join(project_root_abs, f"vol{vol_idx:02d}", name))
+
+    for name in names:
+        for p in _glob.glob(os.path.join(project_root_abs, "vol*", name)):
+            if p not in candidates:
+                candidates.append(p)
+
+    if not candidates:
+        for name in names:
+            for p in _glob.glob(os.path.join(project_root_abs, "**", name), recursive=True):
+                if p not in candidates:
+                    candidates.append(p)
+    return candidates
+
+
+def _find_chapter_file(project_root_abs: str, state, index: int, *, include_draft: bool = True, prefer_draft: bool = False):
+    candidates = _chapter_candidates(
+        project_root_abs, state, index, include_draft=include_draft, prefer_draft=prefer_draft
+    )
+    path = next((c for c in candidates if os.path.isfile(c)), None)
+    if not path:
+        return None, False, _chapter_volume_index(state, index), candidates
+    is_draft = path.endswith(".draft")
+    vol_idx = _chapter_volume_index(state, index)
+    if vol_idx <= 0:
+        m = _re.search(r"vol(\d+)", path.replace("\\", "/"))
+        if m:
+            vol_idx = int(m.group(1))
+    return path, is_draft, vol_idx, candidates
+
+
+def _chapter_draft_warning(index: int) -> str:
+    path = project_context.progress_status_file()
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        for w in reversed(data.get("warnings") or []):
+            if w.get("source") in (f"chapter:{index}:draft", f"chapter:{index}:canon"):
+                return w.get("message") or ""
+    except Exception:
+        return ""
+    return ""
+
+
+def _draft_summary_dict(state, index: int, path: str, volume_index: int, content: str = None):
+    from persistence.state import count_chapter_words
+
+    if content is None:
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+    reason = _chapter_draft_warning(index)
+    return {
+        "index": index,
+        "volume_index": volume_index,
+        "title": _chapter_title_from_text(content, index),
+        "summary": reason or "草稿：未通过定稿前校验，尚未保存为正式正文。",
+        "word_count": count_chapter_words(content),
+        "tension": "草稿",
+        "key_events": [],
+        "sp_triggered": [],
+        "closing_hook": "",
+        "pacing": None,
+        "is_draft": True,
+        "status": "draft",
+        "row_id": f"{index}:draft",
+        "draft_reason": reason,
+    }
+
+
+def _completed_chapters_with_drafts(state):
+    import glob as _glob
+
+    rows = [_summary_to_dict(c) for c in (state.completed_chapters or [])]
+    project_root_abs = os.path.abspath(project_context.project_dir())
+    for path in sorted(_glob.glob(os.path.join(project_root_abs, "vol*", "chapter_*.txt.draft"))):
+        index = _chapter_index_from_path(path)
+        if not index:
+            continue
+        vol_idx = _chapter_volume_index(state, index)
+        if vol_idx <= 0:
+            m = _re.search(r"vol(\d+)", path.replace("\\", "/"))
+            vol_idx = int(m.group(1)) if m else 0
+        rows.append(_draft_summary_dict(state, index, path, vol_idx))
+    return sorted(rows, key=lambda r: (r.get("index") or 0, 0 if r.get("is_draft") else 1))
 
 
 # ═══════════════════════════════════════════════════════
@@ -656,6 +918,8 @@ def api_get_section(name):
     # 已写章节的 word_count 历史用 len()（字符数）存的——首次访问时按新算法（中文小说标准）重算
     if name == "completed_chapters":
         _ensure_chapter_word_counts_migrated(project_context.current())
+        s = _load()
+        return jsonify(_completed_chapters_with_drafts(s))
 
     # Fast path：直接读分文件 JSON（split state）
     try:
@@ -691,6 +955,18 @@ def api_put_section(name):
     data = request.get_json()
     setter(s, data)
     _save(s, label=f"edit_{name}")
+
+    # 编辑 canon 类 section 后自动扫描下游产物，违规聚合写 progress_warning，
+    # 让用户在 ⚠ 徽章里立刻看到"以下章节 outline 与新数据不一致"——
+    # 不静默继续。结果通过 progress_status.json 通道推送（前端轮询自然能看到），
+    # 不改变 PUT 响应结构（保持向后兼容）。
+    try:
+        from agents.downstream_staleness import report_downstream_staleness, _CANON_SECTIONS
+        if name in _CANON_SECTIONS:
+            report_downstream_staleness(s, changed_section=name, scan_chapters=False)
+    except Exception as _e:
+        print(f"  ⚠ 下游 staleness 扫描失败（不阻塞）：{type(_e).__name__}: {_e}")
+
     return jsonify(getter(s))
 
 
@@ -855,8 +1131,9 @@ def api_chapter_outline_edit(project_id, index):
     o = vol.chapter_outlines[local] or {}
     if not isinstance(o, dict):
         o = {}
-    # 只更新前端真传来的字段
-    for k in ("goal", "purpose", "expression", "title", "structure_role", "position"):
+    # 只更新前端真传来的字段（含新增 chapter_focus / reader_hook）
+    for k in ("goal", "purpose", "expression", "title", "structure_role", "position",
+                "chapter_focus", "reader_hook"):
         if k in body:
             o[k] = body[k] or ""
     if "must_include" in body and isinstance(body["must_include"], list):
@@ -935,6 +1212,9 @@ def api_chapter_preview(project_id, index):
     result["outline_structure_role"] = outline.get("structure_role", "")
     result["outline_purpose"] = outline.get("purpose", "")
     result["outline_expression"] = outline.get("expression", "")
+    # ── 新增字段（volume_planner Phase 4_vol 生成）──
+    result["outline_chapter_focus"] = outline.get("chapter_focus", "")
+    result["outline_reader_hook"] = outline.get("reader_hook", "")
     # stage 归属（让前端显示"本章属于哪个大情节"badge）
     sid = (outline.get("stage_id") or "").strip()
     if not sid:
@@ -1201,6 +1481,10 @@ def api_llm_profiles():
         "providers": llm_profiles.list_providers(),
         "default": llm_profiles.DEFAULT_PROFILE_ID,
         "known_usages": user_models.all_usages(),
+        # 前端复选框 tooltip 用——内置 usage 标签的可读说明（main / reviewer /
+        # fallback / in_story_ai 等）。in_story_ai 是新加的：勾上后该 profile
+        # 会出现在 SpecialAbility 编辑界面的"真 AI 接入"下拉框里
+        "usage_descriptions": user_models.usage_descriptions(),
     })
 
 
@@ -1211,35 +1495,188 @@ def api_user_models_list():
     return jsonify({"models": user_models.list_all(include_key=False)})
 
 
+@app.route("/api/projects/<project_id>/asset_candidates")
+def api_project_asset_candidates(project_id):
+    """章后 asset 追踪——返回当前所有疑似新 asset 候选（连续 N 章出现的）。
+    前端"力量体系"页可加 widget 显示 + 让用户一键登记为 SpecialAbility。
+    """
+    from project_mgmt import project_context
+    project_context.set_project(project_id)
+    s = _load()
+    try:
+        from agents.chapter_asset_tracker import list_pending_candidates
+        return jsonify({
+            "candidates": list_pending_candidates(s, min_chapters=2),
+        })
+    except Exception as e:
+        return jsonify({"candidates": [], "error": str(e)}), 200
+
+
+@app.route("/api/llm_call/routing")
+def api_llm_call_routing():
+    """返回每个 task type 当前实际走的 profile——前端可视化"哪类任务走哪个模型"。
+
+    示例返回：
+      {
+        "writing":    {"usage":"main", "active_profile":"deepseek_v4_pro", "fallback_used":false, ...},
+        "extraction": {"usage":"extractor", "active_profile":null, "fallback_used":true, "fallback_to":"deepseek_v4_pro"},
+        ...
+      }
+    """
+    from llm_layer.llm_call import get_task_routing_summary, TASK_DESCRIPTIONS
+    return jsonify({
+        "tasks": get_task_routing_summary(),
+        "task_descriptions": TASK_DESCRIPTIONS,
+    })
+
+
+@app.route("/api/user_models/active_usage_map")
+def api_user_models_active_usage_map():
+    """返回每个内置 usage 当前实际生效的 profile（first-hit），以及
+    UNIQUE usage 的多占冲突列表。前端模型管理页用此显示"main 当前生效=X"
+    + 红字警告"还有 Y 个 profile 勾了 main 但不会生效"。
+
+    示例返回：
+      {
+        "active": {"main": {...profile...}, "reviewer": {...}, "extractor": null, ...},
+        "conflicts": [
+          {"usage": "main", "active_profile_id": "doubao_...",
+           "shadowed_profile_ids": ["deepseek_v4_pro"], "total": 2}
+        ]
+      }
+    """
+    from llm_layer import user_models
+    active = {}
+    for usage, m in user_models.active_usage_map().items():
+        if m:
+            # 遮挡 api_key
+            m = dict(m)
+            m.pop("api_key", None)
+            m["api_key_masked"] = user_models._mask_key(
+                user_models.find_by_usage(usage).get("api_key", "") if user_models.find_by_usage(usage) else ""
+            )
+        active[usage] = m
+    return jsonify({
+        "active": active,
+        "conflicts": user_models.detect_usage_conflicts(),
+        "unique_usages": sorted(user_models.UNIQUE_USAGES),
+    })
+
+
+@app.route("/api/user_models/in_story_ai")
+def api_user_models_in_story_ai():
+    """返回所有勾选了 in_story_ai usage 的 profile——
+    SpecialAbility 编辑界面的 external_llm_profile 下拉框专用。
+
+    避免用户把主写作 / 审核员模型误选作 in-story AI——下拉框只列
+    专门标记可用的 profile。同时附 usage_descriptions 让 UI 可显示 tooltip。
+    """
+    from llm_layer import user_models
+    return jsonify({
+        "models": user_models.list_in_story_ai_profiles(),
+        "usage_descriptions": user_models.usage_descriptions(),
+    })
+
+
+def _surface_usage_conflicts():
+    """扫描 UNIQUE_USAGES 多占冲突，写 progress_warning（同 source 自动去重）。
+    模型管理任何写操作后调一次——让用户在 ⚠ 徽章立即看到生效情况。
+    """
+    try:
+        from llm_layer import user_models
+        from persistence.checkpoint import add_progress_warning, clear_progress_warnings
+        conflicts = user_models.detect_usage_conflicts()
+        # 先清旧 warning——本次扫描没冲突就别留旧的
+        clear_progress_warnings(source="user_models:usage_conflicts")
+        if conflicts:
+            lines = []
+            for c in conflicts:
+                lines.append(
+                    f"usage='{c['usage']}' 被 {c['total']} 个 profile 同时占用 → "
+                    f"实际生效：{c['active_profile_id']}；被覆盖：{','.join(c['shadowed_profile_ids'])}"
+                )
+            add_progress_warning(
+                level="warn",
+                source="user_models:usage_conflicts",
+                message=("模型用途冲突（first-hit 静默选第一个）：\n" + "\n".join(lines)
+                         + "\n建议：在'模型管理'里取消多余 profile 的勾选，保留你想生效的那一个"),
+            )
+    except Exception:
+        pass
+
+
 @app.route("/api/user_models", methods=["POST"])
 def api_user_models_add():
-    """新增用户自定义模型。"""
+    """新增用户自定义模型。
+
+    默认会发一次真实 LLM ping 验证连通——慢 endpoint 会让保存等 5-20s。
+    支持 ?skip_test=1 跳过验证（用户已知模型可达时用）。
+    """
     from llm_layer import user_models
     body = request.get_json() or {}
+    skip_test = request.args.get("skip_test", "").lower() in ("1", "true", "yes")
+    test = None
     try:
+        if not skip_test:
+            test = user_models.test_model_config(body, timeout=10.0)
         entry = user_models.add(body)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    _surface_usage_conflicts()
     # 返回时遮挡 key
     result = dict(entry)
     result["api_key_masked"] = user_models._mask_key(result.get("api_key", ""))
     result.pop("api_key", None)
-    return jsonify({"status": "ok", "model": result})
+    return jsonify({"status": "ok", "model": result, "test": test, "skipped_test": skip_test})
+
+
+# 决定是否需要重测 LLM 连通的关键字段——这些任一变化才 ping，
+# 其它字段（display_name / usages / notes）变化不重测
+_RETEST_TRIGGER_FIELDS = ("base_url", "api_key", "model", "extra_body")
 
 
 @app.route("/api/user_models/<model_id>", methods=["PUT"])
 def api_user_models_update(model_id):
-    """更新——字段可部分传。api_key 留空则保留原 key。"""
+    """更新——字段可部分传。api_key 留空则保留原 key。
+
+    优化：只在 base_url / api_key / model / extra_body 实际发生变化时才 ping LLM；
+    只改 display_name / usages / notes 等元数据时跳过验证，秒级响应。
+    也支持 ?skip_test=1 强制跳过验证。
+    """
     from llm_layer import user_models
     body = request.get_json() or {}
+    skip_test = request.args.get("skip_test", "").lower() in ("1", "true", "yes")
     try:
+        existing = user_models.get(model_id, include_key=True)
+        if not existing:
+            return jsonify({"error": f"未找到 id={model_id}"}), 404
+        test_payload = dict(existing)
+        for k, v in body.items():
+            if k == "api_key" and not str(v or "").strip():
+                continue
+            test_payload[k] = v
+        # 判断关键字段是否变了——没变就不 ping，省 5-20s
+        critical_changed = any(
+            (test_payload.get(f) or "") != (existing.get(f) or "")
+            for f in _RETEST_TRIGGER_FIELDS
+        )
+        test = None
+        if critical_changed and not skip_test:
+            test = user_models.test_model_config(test_payload, timeout=10.0)
         entry = user_models.update(model_id, body)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    _surface_usage_conflicts()
     result = dict(entry)
     result["api_key_masked"] = user_models._mask_key(result.get("api_key", ""))
     result.pop("api_key", None)
-    return jsonify({"status": "ok", "model": result})
+    return jsonify({
+        "status": "ok",
+        "model": result,
+        "test": test,
+        "tested": test is not None,
+        "skipped_test": skip_test,
+    })
 
 
 @app.route("/api/user_models/<model_id>", methods=["DELETE"])
@@ -1248,6 +1685,7 @@ def api_user_models_delete(model_id):
     ok = user_models.remove(model_id)
     if not ok:
         return jsonify({"error": f"未找到 id={model_id}"}), 404
+    _surface_usage_conflicts()  # 删除后冲突状况也可能变
     return jsonify({"status": "ok"})
 
 
@@ -1287,7 +1725,7 @@ def api_project_llm_profile_set(project_id):
 @app.route("/api/chapter/<int:index>")
 def api_chapter_text(index):
     """
-    读指定章节正文——超级健壮版（任何情况下只要磁盘上有文件都能找到）。
+    读指定章节正文——超级健壮版（正式稿和 .draft 草稿都能找到）。
     """
     import glob as _glob
 
@@ -1303,32 +1741,18 @@ def api_chapter_text(index):
             "hint": "URL 的 project 参数可能写错了",
         }), 404
 
-    # state.volumes 推 vol_idx（有的话用，没有就靠 glob 兜底）
     s = _load()
-    vol_idx = 0
-    if s and s.volumes:
-        for v in s.volumes:
-            if v.chapter_start <= index <= v.chapter_end:
-                vol_idx = v.index
-                break
-
-    chapter_fname = f"chapter_{index:04d}.txt"
-    candidates = []
-    if vol_idx > 0:
-        candidates.append(os.path.join(project_root_abs, f"vol{vol_idx:02d}", chapter_fname))
-    # 无论如何都 glob 扫一遍
-    for p in _glob.glob(os.path.join(project_root_abs, "vol*", chapter_fname)):
-        if p not in candidates:
-            candidates.append(p)
-    # 最后兜底：递归搜
-    if not candidates:
-        for p in _glob.glob(os.path.join(project_root_abs, "**", chapter_fname), recursive=True):
-            candidates.append(p)
-
-    path = next((c for c in candidates if os.path.isfile(c)), None)
+    path, is_draft, vol_idx, candidates = _find_chapter_file(
+        project_root_abs, s, index,
+        include_draft=True,
+        prefer_draft=request.args.get("draft") in ("1", "true", "yes"),
+    )
 
     if not path:
-        all_chapters = sorted(_glob.glob(os.path.join(project_root_abs, "vol*", "chapter_*.txt")))
+        all_chapters = sorted(
+            _glob.glob(os.path.join(project_root_abs, "vol*", "chapter_*.txt"))
+            + _glob.glob(os.path.join(project_root_abs, "vol*", "chapter_*.txt.draft"))
+        )
         available = [os.path.relpath(c, project_root_abs).replace("\\", "/") for c in all_chapters[:20]]
         print(f"[api_chapter_text] 404 tried={candidates} available={available[:5]}")
         return jsonify({
@@ -1344,11 +1768,112 @@ def api_chapter_text(index):
     with open(path, encoding="utf-8") as f:
         content = f.read()
     summary = next((c for c in (s.completed_chapters if s else []) if c.index == index), None)
+    summary_dict = _summary_to_dict(summary) if summary else None
+    if is_draft and not summary_dict:
+        summary_dict = _draft_summary_dict(s, index, path, vol_idx, content)
     return jsonify({
         "index": index,
         "volume": vol_idx,
         "content": content,
-        "summary": _summary_to_dict(summary) if summary else None,
+        "summary": summary_dict,
+        "is_draft": is_draft,
+        "status": "draft" if is_draft else "final",
+        "draft_reason": _chapter_draft_warning(index) if is_draft else "",
+    })
+
+
+@app.route("/api/chapter/<int:index>/accept_draft", methods=["POST"])
+def api_chapter_accept_draft(index):
+    """
+    作者人工确认：把未过校验的 .draft 草稿保存为正式正文。
+    这不会修复 canon 问题，只是明确由作者接管风险后放行。
+    """
+    from persistence.checkpoint import mark_chapter_done, clear_progress_warnings
+    from persistence.state import ChapterSummary, TensionLevel, count_chapter_words
+
+    body = request.get_json(silent=True) or {}
+    overwrite = bool(body.get("overwrite"))
+    project_root_abs = os.path.abspath(project_context.project_dir())
+    s = _load()
+    path, is_draft, vol_idx, candidates = _find_chapter_file(
+        project_root_abs, s, index, include_draft=True, prefer_draft=True
+    )
+    if not path or not is_draft:
+        return jsonify({
+            "error": f"没有找到第 {index} 章草稿",
+            "searched_paths": candidates,
+        }), 404
+
+    final_path = path[:-len(".draft")]
+    if os.path.exists(final_path) and not overwrite:
+        return jsonify({
+            "error": "正式正文已存在。如需覆盖，请传 overwrite=true。",
+            "final_path": final_path,
+        }), 409
+
+    os.replace(path, final_path)
+    with open(final_path, encoding="utf-8") as f:
+        content = f.read()
+
+    summary = next((c for c in s.completed_chapters if c.index == index), None)
+    if summary:
+        summary.word_count = count_chapter_words(content)
+        if not summary.title:
+            summary.title = _chapter_title_from_text(content, index)
+    else:
+        summary = ChapterSummary(
+            index=index,
+            volume_index=vol_idx,
+            title=_chapter_title_from_text(content, index),
+            summary="作者手动将未通过定稿前校验的草稿保存为正式正文。",
+            word_count=count_chapter_words(content),
+            tension=TensionLevel.RISING,
+            key_events=[],
+            sp_triggered=[],
+            closing_hook="",
+        )
+        s.completed_chapters.append(summary)
+
+    if s.current_chapter_index < index:
+        s.current_chapter_index = index
+    s.completed_chapters = sorted(s.completed_chapters, key=lambda c: c.index)
+    mark_chapter_done(index, s)
+    clear_progress_warnings(source=f"chapter:{index}:draft")
+    clear_progress_warnings(source=f"chapter:{index}:canon")
+    return jsonify({
+        "status": "ok",
+        "index": index,
+        "path": final_path,
+        "summary": _summary_to_dict(summary),
+    })
+
+
+@app.route("/api/chapter/<int:index>/draft", methods=["DELETE"])
+def api_chapter_discard_draft(index):
+    """
+    弃用草稿：只删除 chapter_XXXX.txt.draft，不改 completed_chapters、
+    progress.chapters、current_chapter_index，也不清理后续章节状态。
+    """
+    from persistence.checkpoint import clear_progress_warnings
+
+    project_root_abs = os.path.abspath(project_context.project_dir())
+    s = _load()
+    path, is_draft, _, candidates = _find_chapter_file(
+        project_root_abs, s, index, include_draft=True, prefer_draft=True
+    )
+    if not path or not is_draft:
+        return jsonify({
+            "error": f"没有找到第 {index} 章草稿",
+            "searched_paths": candidates,
+        }), 404
+
+    os.remove(path)
+    clear_progress_warnings(source=f"chapter:{index}:draft")
+    clear_progress_warnings(source=f"chapter:{index}:canon")
+    return jsonify({
+        "status": "ok",
+        "index": index,
+        "deleted_file": os.path.relpath(path, project_root_abs).replace("\\", "/"),
     })
 
 
@@ -1381,20 +1906,15 @@ def api_chapter_delete(index):
     if not s:
         return jsonify({"error": "state 未加载"}), 400
 
-    # ── 算出要删的章节索引集合 ──
+    # ── 算出要删的章节索引集合（只删除正式正文；草稿由 /draft 单独弃用） ──
+    chapter_files = _glob.glob(os.path.join(project_root_abs, "vol*", "chapter_*.txt"))
+    chapter_indexes = [i for i in (_chapter_index_from_path(p) for p in chapter_files) if i is not None]
     if mode == "all":
-        to_delete = set(
-            int(os.path.basename(p).replace("chapter_", "").replace(".txt", ""))
-            for p in _glob.glob(os.path.join(project_root_abs, "vol*", "chapter_*.txt"))
-        )
+        to_delete = set(chapter_indexes)
     elif mode == "only_this":
         to_delete = {index}
     else:  # this_and_after
-        to_delete = set(
-            int(os.path.basename(p).replace("chapter_", "").replace(".txt", ""))
-            for p in _glob.glob(os.path.join(project_root_abs, "vol*", "chapter_*.txt"))
-            if int(os.path.basename(p).replace("chapter_", "").replace(".txt", "")) >= index
-        )
+        to_delete = {i for i in chapter_indexes if i >= index}
 
     if not to_delete:
         return jsonify({"error": f"没有找到要删除的章节（起始 {index}）"}), 404
@@ -2713,6 +3233,43 @@ def api_chapter_inspiration_delete(chapter_index):
     return jsonify({"status": "ok", "chapter_index": chapter_index})
 
 
+@app.route("/api/chapter_inspiration/<int:chapter_index>/validate", methods=["POST"])
+def api_chapter_inspiration_validate(chapter_index):
+    """对本章灵感做合规预检——不写盘、不阻塞保存，仅返回验证结果。
+
+    前端用法：保存灵感后异步调本接口，拿到 validation 弹提示。
+    body: {"text": "..."}  —— 可传外部文本验证（不一定要先保存）；
+          省略则读 state 里已保存的灵感。
+    """
+    body = request.get_json(silent=True) or {}
+    s = _load()
+    text = body.get("text")
+    if text is None:
+        ins = getattr(s, "chapter_inspirations", {}) or {}
+        text = ins.get(chapter_index, "")
+    text = (text or "").strip()
+    try:
+        from agents.inspiration_validator import validate_inspiration
+        result = validate_inspiration(s, chapter_index, text)
+        return jsonify({
+            "status": "ok",
+            "chapter_index": chapter_index,
+            "validation": result.to_dict(),
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "ok",  # 验证失败不阻塞，前端仍可继续
+            "chapter_index": chapter_index,
+            "validation": {
+                "ok": False,
+                "has_issues": False,
+                "issues": [],
+                "suggested_rewrite": "",
+                "summary": f"验证调用失败：{type(e).__name__}",
+            },
+        })
+
+
 @app.route("/api/prompts", methods=["GET"])
 def api_prompts_list():
     """列出所有已注册的系统提示词（按分类）。"""
@@ -2902,15 +3459,6 @@ def api_state_audit_fix_all():
     })
 
 
-@app.route("/api/drift")
-def api_drift():
-    from agents.drift_detector import detect_drift
-    s = _load()
-    window = int(request.args.get("window", 10))
-    report = detect_drift(s, window=window)
-    return jsonify(report)
-
-
 # ═══════════════════════════════════════════════════════
 #  dict 转换辅助
 # ═══════════════════════════════════════════════════════
@@ -2919,6 +3467,48 @@ def _replace_dataclass(obj, d: dict):
     for k, v in d.items():
         if hasattr(obj, k):
             setattr(obj, k, v)
+
+
+def _dump_creative_intent_for_api(ci):
+    """把 CreativeIntent 序列化成 API 友好的 dict（plot_supplements 展开为 list[dict]）。"""
+    out = dict(ci.__dict__)
+    out["plot_supplements"] = [
+        {
+            "name": p.name, "what": p.what, "why_engaging": p.why_engaging,
+            "where_to_inject": p.where_to_inject, "intensity": p.intensity,
+            "adopted": p.adopted, "notes": p.notes,
+        }
+        for p in (ci.plot_supplements or [])
+    ]
+    # revisions 同样展开（如果有的话）—— IntentRevision 是 dataclass
+    out["revisions"] = [r.__dict__ if hasattr(r, "__dict__") else r for r in (ci.revisions or [])]
+    return out
+
+
+def _replace_creative_intent(ci, d: dict):
+    """前端 PUT creative_intent 时——把 plot_supplements 的 dict 转回 PlotSupplement。"""
+    from persistence.state import PlotSupplement
+    for k, v in d.items():
+        if not hasattr(ci, k):
+            continue
+        if k == "plot_supplements" and isinstance(v, list):
+            new_list = []
+            for item in v:
+                if isinstance(item, dict):
+                    new_list.append(PlotSupplement(
+                        name=item.get("name", ""),
+                        what=item.get("what", ""),
+                        why_engaging=item.get("why_engaging", ""),
+                        where_to_inject=item.get("where_to_inject", ""),
+                        intensity=item.get("intensity", "mid"),
+                        adopted=item.get("adopted", None),
+                        notes=item.get("notes", ""),
+                    ))
+                elif isinstance(item, PlotSupplement):
+                    new_list.append(item)
+            ci.plot_supplements = new_list
+        else:
+            setattr(ci, k, v)
 
 
 def _replace_characters(state, d):
@@ -3001,6 +3591,7 @@ def _replace_power_system(state, d: dict):
         PowerSystem, Realm, SpecialAbility, AbilityAwakeningStage,
     )
     ps = state.power_system
+    setattr(state, "_explicit_power_system_put", True)
     if ps is None:
         ps = PowerSystem(system_name="", system_description="", realms=[])
         state.power_system = ps
@@ -3055,38 +3646,95 @@ def _replace_power_system(state, d: dict):
         ps.realms = new_realms
 
     if "special_abilities" in d and isinstance(d["special_abilities"], list):
+        from persistence.state import LifecycleNode
+        # 按 name 索引旧 ability——前端 PUT 时不传的字段必须从旧对象保留，
+        # 不能用 dataclass 默认值（空 list / 空 str）静默覆盖。
+        # 历史教训：前端表单不渲染 lifecycle_nodes / entry_kind，PUT 一次就被清零，
+        # 导致 ability_planner 的节点分级保护全失效——污染下游 outline / writer。
+        old_by_name = {old.name: old for old in (ps.special_abilities or [])}
         new_abs = []
         for a in d["special_abilities"]:
             if not isinstance(a, dict):
                 continue
-            stages = []
-            for st in (a.get("awakening_stages") or []):
-                if not isinstance(st, dict):
-                    continue
-                try:
-                    stages.append(AbilityAwakeningStage(
-                        stage_index=int(st.get("stage_index", len(stages) + 1) or len(stages) + 1),
-                        stage_name=st.get("stage_name", "") or "",
-                        target_volume=int(st.get("target_volume", 1) or 1),
-                        triggering_event=st.get("triggering_event", "") or "",
-                        new_power=st.get("new_power", "") or "",
-                        cost_or_risk=st.get("cost_or_risk", "") or "",
-                    ))
-                except (ValueError, TypeError):
-                    continue
+            name = a.get("name", "") or ""
+            old = old_by_name.get(name)
+
+            # awakening_stages：前端传了 list 才覆盖；缺失则保留旧的
+            if "awakening_stages" in a and isinstance(a["awakening_stages"], list):
+                stages = []
+                for st in a["awakening_stages"]:
+                    if not isinstance(st, dict):
+                        continue
+                    try:
+                        stages.append(AbilityAwakeningStage(
+                            stage_index=int(st.get("stage_index", len(stages) + 1) or len(stages) + 1),
+                            stage_name=st.get("stage_name", "") or "",
+                            target_volume=int(st.get("target_volume", 1) or 1),
+                            triggering_event=st.get("triggering_event", "") or "",
+                            new_power=st.get("new_power", "") or "",
+                            cost_or_risk=st.get("cost_or_risk", "") or "",
+                        ))
+                    except (ValueError, TypeError):
+                        continue
+            else:
+                stages = list(old.awakening_stages) if old else []
+
+            # lifecycle_nodes：**只在前端发非空 list 时才覆盖**——
+            # 历史教训：前端 form 编辑 ability（如改 external_llm_profile）时，
+            # 会把整个 ability dict 原样回发（含从 GET 拿到的 lifecycle_nodes 字段）。
+            # 第一版修复用 `"lifecycle_nodes" in a` 判断"用户显式想替换"，
+            # 但前端永远把这字段带回来——即便它是空（极少 form 暴露 lifecycle 编辑）。
+            # 实际上 lifecycle_nodes 是 ability_roadmap_planner 自动产物，
+            # 用户在 UI 没有"显式清空"的合理场景。所以：
+            #   · 前端发非空 list → 覆盖（用户真的有手动编辑能力）
+            #   · 前端发空 list / 缺失 → 保留旧值（避免静默清零）
+            incoming_nodes = a.get("lifecycle_nodes") if isinstance(a.get("lifecycle_nodes"), list) else None
+            if incoming_nodes:  # 非空 list 才覆盖
+                nodes = []
+                for n in incoming_nodes:
+                    if not isinstance(n, dict):
+                        continue
+                    try:
+                        nodes.append(LifecycleNode(
+                            node_type=str(n.get("node_type") or "acquired"),
+                            target_volume=int(n.get("target_volume", 1) or 1),
+                            target_chapter=int(n.get("target_chapter", 0) or 0),
+                            prerequisites=str(n.get("prerequisites") or "")[:200],
+                            narrative_purpose=str(n.get("narrative_purpose") or "")[:200],
+                            is_dramatic=bool(n.get("is_dramatic", False)),
+                            linked_sp_id=str(n.get("linked_sp_id") or ""),
+                        ))
+                    except (ValueError, TypeError):
+                        continue
+            else:
+                # 空 list 或缺失字段——保留旧 lifecycle_nodes（防静默清零）
+                nodes = list(old.lifecycle_nodes) if old else []
+
+            # 其他字符串/布尔字段——传了就用，没传保留旧值（或空默认）
+            def _pick(field, default=""):
+                if field in a:
+                    return a[field] or default
+                return getattr(old, field, default) if old else default
+
             try:
                 new_abs.append(SpecialAbility(
-                    name=a.get("name", "") or "",
-                    source=a.get("source", "") or "",
-                    description=a.get("description", "") or "",
-                    unlock_condition=a.get("unlock_condition", "") or "",
-                    holder_role=a.get("holder_role", "") or "",
-                    holder_name=a.get("holder_name", "") or "",
-                    is_protagonist_signature=bool(a.get("is_protagonist_signature", False)),
+                    name=name,
+                    source=_pick("source"),
+                    description=_pick("description"),
+                    unlock_condition=_pick("unlock_condition"),
+                    usage_rule=_pick("usage_rule"),
+                    effect_scope=_pick("effect_scope"),
+                    hard_limits=_pick("hard_limits"),
+                    cost_rule=_pick("cost_rule"),
+                    holder_role=_pick("holder_role"),
+                    holder_name=_pick("holder_name"),
+                    is_protagonist_signature=bool(_pick("is_protagonist_signature", False)),
+                    entry_kind=_pick("entry_kind", "ability"),
                     awakening_stages=stages,
-                    plot_integration=a.get("plot_integration", "") or "",
-                    narrative_hook=a.get("narrative_hook", "") or "",
-                    external_llm_profile=a.get("external_llm_profile", "") or "",
+                    lifecycle_nodes=nodes,
+                    plot_integration=_pick("plot_integration"),
+                    narrative_hook=_pick("narrative_hook"),
+                    external_llm_profile=_pick("external_llm_profile"),
                 ))
             except TypeError as e:
                 print(f"  ⚠ ability 创建失败：{e}（跳过该 ability）")
@@ -3242,6 +3890,10 @@ def _summary_to_dict(c):
         "sp_triggered": c.sp_triggered,
         "closing_hook": c.closing_hook,
         "pacing": c.pacing_stats.__dict__ if c.pacing_stats else None,
+        "is_draft": False,
+        "status": "final",
+        "row_id": f"{c.index}:final",
+        "draft_reason": "",
     }
 
 
