@@ -105,7 +105,6 @@
       </div>
     </div>
     <button @click="runInvariants()" title="一致性检查">🔍</button>
-    <button @click="runDrift()" title="漂移检测">📉</button>
     <button @click="showVersions = !showVersions" title="版本历史">⏱</button>
     <button @click="showLog=true; loadLog()" title="运行日志">📜</button>
     <button @click="showModelPicker=true; loadModels()" title="模型切换">🤖</button>
@@ -225,6 +224,22 @@
                       :value="nextChapterPreview.outline_goal || ''"
                       @input="nextChapterPreview.outline_goal = $event.target.value; nextChapterOutlineDirty = true"
                       placeholder="本章主线该推进什么（60字以内）"></textarea>
+          </div>
+
+          <div class="ncc-section ncc-editable ncc-hook">
+            <b>📍 本章一件最重要的事 · chapter_focus <small class="dim">（可改，30字）</small></b>
+            <textarea rows="2"
+                      :value="nextChapterPreview.outline_chapter_focus || ''"
+                      @input="nextChapterPreview.outline_chapter_focus = $event.target.value; nextChapterOutlineDirty = true"
+                      placeholder="一句话讲清这一章读完读者会记住什么——具体到事件/画面/对话/转折"></textarea>
+          </div>
+
+          <div class="ncc-section ncc-editable ncc-hook">
+            <b>🪝 让读者翻下一页的钩子 · reader_hook <small class="dim">（可改，40字，关键）</small></b>
+            <textarea rows="3"
+                      :value="nextChapterPreview.outline_reader_hook || ''"
+                      @input="nextChapterPreview.outline_reader_hook = $event.target.value; nextChapterOutlineDirty = true"
+                      placeholder="必须具体到画面/对话/悬念。例：「主角发现师父抽屉里有一张自己童年照片，但他不记得拍过」「卷宗最后一页只有四个字：'她回来了'」"></textarea>
           </div>
 
           <div class="ncc-section ncc-editable">
@@ -516,15 +531,39 @@
     <label>MODEL *（传给 provider 的模型标识）</label>
     <input x-model="editingModel.model" placeholder="例：deepseek-chat / gpt-4o / gemini-3.1-flash-lite-preview">
 
-    <label>用途（可多选；全部不勾=登记备用，不参与任何路由）</label>
+    <label>用途（unique=互斥；fallback/in_story_ai/custom=可多 model 并存）</label>
     <div class="usage-checkbox-group">
-      <label class="usage-check"><input type="checkbox" x-model="editingModel.usage" value="main">🎯 main — 主 LLM（writer + 所有规划 agent）</label>
-      <label class="usage-check"><input type="checkbox" x-model="editingModel.usage" value="reviewer">🔍 reviewer — 章节合规审核（setup_reviewer）</label>
+      <!-- UNIQUE_USAGES（main/planner/reviewer/extractor）：勾上时如果别的 model 已占，自动 confirm 替换 -->
+      <label class="usage-check"><input type="checkbox" x-model="editingModel.usage" value="main"
+        @change="onUsageToggle('main', $event)">🎯 main — 主写作模型（writer 写正文 · 长文本 + 文笔）<small class="dim">[互斥]</small></label>
+      <label class="usage-check"><input type="checkbox" x-model="editingModel.usage" value="planner"
+        @change="onUsageToggle('planner', $event)">🧠 planner — 规划模型（chapter_planner / line_planner / 等所有"先想后写"规划 agent · 推理 + JSON）<small class="dim">[互斥]</small></label>
+      <label class="usage-check"><input type="checkbox" x-model="editingModel.usage" value="reviewer"
+        @change="onUsageToggle('reviewer', $event)">🔍 reviewer — 章节合规审核（setup_reviewer）<small class="dim">[互斥]</small></label>
+      <label class="usage-check"><input type="checkbox" x-model="editingModel.usage" value="extractor"
+        @change="onUsageToggle('extractor', $event)">🔬 extractor — 结构化提取/生成（world_canon / asset 声明 / intent 解析等 JSON 短任务）<small class="dim">[互斥]</small></label>
+      <!-- 非 unique：多个 model 可同时勾 -->
       <label class="usage-check"><input type="checkbox" x-model="editingModel.usage" value="fallback">🛟 fallback — 备用：主 120s 超时或失败时自动改用</label>
+      <label class="usage-check"><input type="checkbox" x-model="editingModel.usage" value="in_story_ai">🎭 in_story_ai — 可作 in-story 真 AI（主角金手指 AI 助手可绑此 profile）</label>
       <label class="usage-check"><input type="checkbox" x-model="editingModel.usage" value="custom">📌 custom — 自定义（无自动路由，代码里手动引用）</label>
     </div>
     <div class="hint" style="margin-top:6px;">
-      💡 想让一条模型当"叙事内 AI"（如主角的豆包）？无须在这里勾——去 <b>能力体系</b> 里给某条 SpecialAbility 设 <code>external_llm_profile</code>，writer 写到主角问该能力时会自动用这条真实调。
+      💡 <b>[互斥] usage</b>（main/planner/reviewer/extractor）一次只能被一个 model 占用——
+      勾上时若已有其他 model 占用，会弹窗确认是否替换。后端 PUT 时也会强制 enforce
+      （自动从旧 model 上移除该 usage）。
+      <br><br>
+      💡 <b>main vs planner vs extractor</b> — 三类任务模型需求完全不同，建议分开：
+      <ul style="margin: 4px 0 0 16px;">
+        <li><b>main</b>：writer 写章正文。要长文本 + 文笔（Claude Sonnet / DeepSeek V4 Pro）</li>
+        <li><b>planner</b>：所有"先想后写"的规划 agent。要推理 + JSON（可比 main 更强或更便宜，看你侧重）</li>
+        <li><b>extractor</b>：从文本抽 JSON。短输入短输出，<b>轻量便宜模型够</b>（gemini-flash / haiku）</li>
+        <li><b>reviewer</b>：审核打分。快速便宜（gemini-flash）</li>
+      </ul>
+      <br>
+      💡 <b>没绑的 usage 自动 fallback 到 main</b>——向后兼容，但实际能力 / 成本都不如显式绑。
+      <br><br>
+      💡 <b>in_story_ai</b>：SpecialAbility.external_llm_profile 下拉框会过滤显示
+      勾过此 usage 的 profile，避免选错主写作模型导致 DeepSeek/Claude 等元语言污染正文。
     </div>
 
     <label>备注（可选）</label>
@@ -566,7 +605,7 @@
 
         <!-- 步骤指示器 -->
         <div class="wizard-steps">
-          <template x-for="n in 5" :key="n">
+          <template x-for="n in 6" :key="n">
             <div class="step-dot" :class="n === wizardStep ? 'active' : n < wizardStep ? 'done' : ''"
                  @click="wizardGoto(n)">
               <span x-text="n"></span>
@@ -575,9 +614,71 @@
           </template>
         </div>
 
-        <!-- Step 1: 题材 -->
+        <!-- Step 1: 故事根基（真实 vs 虚构）—— 决定下游能否自由编撰真实人物言行 -->
         <div class="wizard-body" x-show="wizardStep===1">
-          <h4>第 1 步：你要写哪类故事？</h4>
+          <h4>第 1 步：故事的根基是什么？</h4>
+          <p class="dim">（点一个——决定下游能否自由编撰真实人物言行）</p>
+          <div class="choice-grid choice-grid-3col">
+            <div class="choice-card" :class="wizardPicks.reality_basis==='real_history' ? 'picked' : ''"
+                 @click="wizardPicks.reality_basis='real_history'">
+              <div class="choice-emoji">🏛</div>
+              <div class="choice-title">严格基于真实历史</div>
+              <div class="choice-desc">朝代/事件/人物言行须符合史料。不许穿越/系统/异能。</div>
+            </div>
+            <div class="choice-card" :class="wizardPicks.reality_basis==='real_adapted' ? 'picked' : ''"
+                 @click="wizardPicks.reality_basis='real_adapted'">
+              <div class="choice-emoji">📜</div>
+              <div class="choice-title">真实人物/事件改编</div>
+              <div class="choice-desc">大方向尊重史料，细节可文学化演绎。允许有限超现实。</div>
+            </div>
+            <div class="choice-card" :class="wizardPicks.reality_basis==='fictional' ? 'picked' : ''"
+                 @click="wizardPicks.reality_basis='fictional'">
+              <div class="choice-emoji">🌌</div>
+              <div class="choice-title">完全虚构</div>
+              <div class="choice-desc">人物/事件/世界观全凭脑洞。最自由。</div>
+            </div>
+          </div>
+
+          <!-- 真实模式下追加输入：历史背景 + 须尊重的真实人物 -->
+          <div class="wizard-reality-detail"
+               x-show="wizardPicks.reality_basis==='real_history' || wizardPicks.reality_basis==='real_adapted'">
+            <h5 style="margin-top:18px">📅 历史背景（必填）</h5>
+            <input type="text" x-model="wizardPicks.historical_setting"
+                   placeholder="例：唐贞观初年 / 民国军阀混战 / 北宋仁宗朝 / 三国蜀汉"
+                   maxlength="60">
+            <p class="hint">朝代 / 时期 / 区域——会传给世界观/人物设计 agent 作为硬约束。</p>
+
+            <h5 style="margin-top:14px">👤 须尊重史实的真实历史人物（可选，建议列出）</h5>
+            <div class="real-person-input-row">
+              <input type="text" x-model="wizardPicks.realPersonInput"
+                     @keyup.enter="wizardAddRealPerson()"
+                     placeholder="如：李世民、长孙皇后、魏征（输入后回车 / 点 +）">
+              <button type="button" class="btn-mini" @click="wizardAddRealPerson()">+ 添加</button>
+            </div>
+            <div class="real-person-chip-row" x-show="wizardPicks.real_persons.length > 0">
+              <template x-for="(p, i) in wizardPicks.real_persons" :key="p+i">
+                <span class="chip chip-real-person">
+                  <span x-text="p"></span>
+                  <button type="button" class="chip-remove" @click="wizardPicks.real_persons.splice(i,1)"
+                          title="移除">×</button>
+                </span>
+              </template>
+            </div>
+            <p class="hint">列出的人物会被 canon_checker 重点盯防——他们的台词/动机/抉择/结局必须符合史料。</p>
+          </div>
+
+          <!-- 虚构模式下给一句确认提示 -->
+          <div class="wizard-reality-detail" x-show="wizardPicks.reality_basis==='fictional'">
+            <p class="hint" style="margin-top:14px">
+              ✓ 完全虚构模式 —— 下游 agent 不会受真实人物史料约束，可自由编撰。
+              即使后面题材里出现某个真实词汇（如"民国"/"明朝"），本书也不基于真实历史。
+            </p>
+          </div>
+        </div>
+
+        <!-- Step 2: 题材 -->
+        <div class="wizard-body" x-show="wizardStep===2">
+          <h4>第 2 步：你要写哪类故事？</h4>
           <p class="dim">（点一个——决定世界观和读者群）</p>
           <div class="choice-grid">
             <template x-for="opt in WIZARD_PRESETS.genre" :key="opt.id">
@@ -606,9 +707,9 @@
           </div>
         </div>
 
-        <!-- Step 2: 套路（可多选）-->
-        <div class="wizard-body" x-show="wizardStep===2">
-          <h4>第 2 步：故事走什么路子？</h4>
+        <!-- Step 3: 套路（可多选）-->
+        <div class="wizard-body" x-show="wizardStep===3">
+          <h4>第 3 步：故事走什么路子？</h4>
           <p class="dim">（可多选 1-3 个——决定情节套路和爽点）</p>
           <div class="choice-grid">
             <template x-for="opt in WIZARD_PRESETS.trope" :key="opt.id">
@@ -622,9 +723,9 @@
           </div>
         </div>
 
-        <!-- Step 3: 主角类型 -->
-        <div class="wizard-body" x-show="wizardStep===3">
-          <h4>第 3 步：主角是什么类型？</h4>
+        <!-- Step 4: 主角类型 -->
+        <div class="wizard-body" x-show="wizardStep===4">
+          <h4>第 4 步：主角是什么类型？</h4>
           <p class="dim">（点一个——决定主角原型）</p>
           <div class="choice-grid">
             <template x-for="opt in WIZARD_PRESETS.archetype" :key="opt.id">
@@ -638,9 +739,9 @@
           </div>
         </div>
 
-        <!-- Step 4: 基调 -->
-        <div class="wizard-body" x-show="wizardStep===4">
-          <h4>第 4 步：整体什么基调？</h4>
+        <!-- Step 5: 基调 -->
+        <div class="wizard-body" x-show="wizardStep===5">
+          <h4>第 5 步：整体什么基调？</h4>
           <p class="dim">（点一个——决定氛围和文风）</p>
           <div class="choice-grid">
             <template x-for="opt in WIZARD_PRESETS.tone" :key="opt.id">
@@ -654,9 +755,9 @@
           </div>
         </div>
 
-        <!-- Step 5: 平台/读者 + 预览 -->
-        <div class="wizard-body" x-show="wizardStep===5">
-          <h4>第 5 步：给哪个平台/读者？</h4>
+        <!-- Step 6: 平台/读者 → 标题（独立）→ 补充细节（独立）→ 合成预览（可折叠只读）-->
+        <div class="wizard-body" x-show="wizardStep===6">
+          <h4>第 6 步：给哪个平台/读者？</h4>
           <p class="dim">（点一个——决定爽点密度、节奏、内容尺度）</p>
           <div class="choice-grid">
             <template x-for="opt in WIZARD_PRESETS.audience" :key="opt.id">
@@ -669,8 +770,8 @@
             </template>
           </div>
 
-          <!-- 标题（必填——直接作为项目文件夹名）-->
-          <div class="wizard-title-input" x-show="wizardPicks.audience">
+          <!-- ── 区块 1：标题（独立框）─────────────────── -->
+          <div class="wizard-final-section wizard-title-input" x-show="wizardPicks.audience">
             <h5>📘 给你的小说起个名字（必填）</h5>
             <input type="text" class="wizard-title-field"
                    x-model="wizardPicks.title"
@@ -679,27 +780,36 @@
             <p class="hint">中文/英文都行，最好简短有记忆点。此名字会直接作为项目文件夹名（如 <code>projects/苍穹问道/</code>）。</p>
           </div>
 
-          <!-- 补充细节（可选——想特别强调的点 / AI 需要知道的额外信息）-->
-          <div class="wizard-extra-input" x-show="wizardPicks.audience">
-            <h5>💡 想特别强调的细节（可选）</h5>
-            <textarea x-model="wizardPicks.extraNotes" rows="4"
+          <!-- ── 区块 2：补充细节（独立框，与标题视觉分隔）── -->
+          <div class="wizard-final-section wizard-extra-input" x-show="wizardPicks.audience">
+            <h5>💡 想特别强调的细节（可选）—— 主题 / 想表达什么 / 关键画面 / 人物设定</h5>
+            <textarea x-model="wizardPicks.extraNotes" rows="5"
                       placeholder="任何你想让 AI 知道、但上面几步没能表达的——例：&#10;• 主角叫 XXX，有个失散多年的妹妹&#10;• 对标《诡秘之主》+《大奉打更人》的合成感&#10;• 要求节奏慢、多日常描写，不要一味追求爽感&#10;• 男主腹黑但护短，女主智商在线&#10;• 第一卷从主角穿越前一天开始铺垫..."></textarea>
-            <p class="hint">这段会被追加到合成意图末尾，直接影响下游所有 agent 的设计方向。</p>
+            <p class="hint">这段是"主题 / 创作内容"的自由输入区——只填这里，不会和标题/选项混在一起。</p>
           </div>
 
-          <!-- 意图预览（实时拼接）-->
-          <div class="wizard-preview" x-show="wizardPicks.audience">
-            <h5>📝 合成的创作意图（可编辑）</h5>
-            <textarea x-model="wizardFinalIntent" rows="6"></textarea>
-            <p class="hint">提交后会存成 intent_description，IntentAnalyzer 会从这段话推断出主题/卖点/套路/文风等全部字段。</p>
+          <!-- ── 区块 3：合成预览（可折叠只读，避免一个大框装所有信息）── -->
+          <div class="wizard-final-section wizard-preview" x-show="wizardPicks.audience">
+            <details>
+              <summary><b>📝 看看下游会收到的合成意图</b>（点开预览/可编辑——通常不必动）</summary>
+              <textarea x-model="wizardFinalIntent" rows="7" class="wizard-preview-textarea"></textarea>
+              <p class="hint">这段是把上面 6 步的选择 + 补充细节自动拼好的"自然语言意图"。
+                IntentAnalyzer 会从它推断出主题/卖点/套路/文风等所有结构化字段。
+                想手动微调就直接改；改完后再回去改选项不会覆盖你的修改。</p>
+            </details>
+          </div>
+
+          <!-- ── 区块 4：运行选项（与主体留出空隙）── -->
+          <div class="wizard-final-section wizard-run-options" x-show="wizardPicks.audience">
+            <h5>⚙ 创建后立即做什么？</h5>
             <div class="wizard-auto-options">
               <label class="inline">
                 <input type="checkbox" x-model="newProj.analyze_now">
-                🔎 立即分析并生成立项
+                🔎 立即分析意图（Phase -1）并生成立项三件套（Phase 0）
               </label>
               <label class="inline">
                 <input type="checkbox" x-model="newProj.start_after" :disabled="!newProj.analyze_now">
-                🚀 分析完自动开始写作
+                🚀 分析完自动开始完整写作流水线
               </label>
             </div>
             <div class="mode-toggle wizard-mode-toggle">
@@ -720,12 +830,12 @@
         <!-- 导航按钮 -->
         <div class="wizard-nav">
           <button class="btn-sec" @click="wizardPrev()" :disabled="wizardStep===1">← 上一步</button>
-          <span class="dim" x-text="`第 ${wizardStep} / 5 步`"></span>
-          <button class="btn-primary" @click="wizardNext()" x-show="wizardStep<5"
+          <span class="dim" x-text="`第 ${wizardStep} / 6 步`"></span>
+          <button class="btn-primary" @click="wizardNext()" x-show="wizardStep<6"
                   :disabled="!wizardCanGoNext()">
             下一步 →
           </button>
-          <button class="btn-primary" @click="wizardSubmit()" x-show="wizardStep===5"
+          <button class="btn-primary" @click="wizardSubmit()" x-show="wizardStep===6"
                   :disabled="!wizardCanSubmit() || creating">
             <span x-show="!creating">🚀 开始创建</span>
             <span x-show="creating">⏳ 创建中...</span>
@@ -925,6 +1035,8 @@
           📋 状态审计
         </h4>
         <div class="nav-items" x-show="sidebarOpen.phaseaudit" x-transition>
+          <a :class="{'active': current==='module_flow', 'running': runningSidebarKey()==='module_flow'}"
+             @click.prevent="load('module_flow')" href="#">模块流程图</a>
           <a :class="{'active': current==='state_audit', 'running': runningSidebarKey()==='state_audit'}"
              @click.prevent="openStateAudit()" href="#">
             状态审计（复盘）
@@ -1045,6 +1157,62 @@
 
             <div x-show="data && data.analyzed" class="intent-result">
               <h4>📊 分析结果</h4>
+
+              <!-- 故事根基（真实 vs 虚构）—— 顶部最显眼，因为它决定下游能否自由编撰真实人物 -->
+              <div class="intent-reality-basis"
+                   :class="'rb-' + (data.reality_basis || 'fictional')"
+                   x-show="data.reality_basis">
+                <div class="rb-head">
+                  <span class="rb-icon" x-show="data.reality_basis==='real_history'">🏛</span>
+                  <span class="rb-icon" x-show="data.reality_basis==='real_adapted'">📜</span>
+                  <span class="rb-icon" x-show="data.reality_basis==='fictional'">🌌</span>
+                  <b>故事根基</b>
+                  <select class="rb-select" :value="data.reality_basis"
+                          @change="data.reality_basis = $event.target.value; hasEdits = true">
+                    <option value="real_history">严格基于真实历史</option>
+                    <option value="real_adapted">真实人物/事件改编</option>
+                    <option value="fictional">完全虚构</option>
+                  </select>
+                </div>
+                <div class="rb-detail"
+                     x-show="data.reality_basis==='real_history' || data.reality_basis==='real_adapted'">
+                  <div class="rb-row">
+                    <span class="lbl">历史背景</span>
+                    <input type="text" :value="data.historical_setting || ''"
+                           @input="data.historical_setting = $event.target.value; hasEdits = true"
+                           placeholder="如：唐贞观初年 / 民国军阀混战时期">
+                  </div>
+                  <div class="rb-row">
+                    <span class="lbl">真实人物</span>
+                    <span class="rb-persons">
+                      <template x-for="(p, i) in (data.real_persons || [])" :key="p+i">
+                        <span class="chip chip-real-person">
+                          <span x-text="p"></span>
+                          <button type="button" class="chip-remove"
+                                  @click="data.real_persons.splice(i,1); hasEdits = true">×</button>
+                        </span>
+                      </template>
+                      <input type="text" class="rb-add-input"
+                             x-model="newRealPerson"
+                             @keyup.enter="addRealPersonToIntent()"
+                             placeholder="加人物（回车）">
+                    </span>
+                  </div>
+                  <div class="rb-row">
+                    <label class="inline">
+                      <input type="checkbox" :checked="data.respect_real_figures"
+                             @change="data.respect_real_figures = $event.target.checked; hasEdits = true">
+                      ☑ 强制尊重真实人物言行（writer/canon_checker 会按史料盯防）
+                    </label>
+                  </div>
+                </div>
+                <p class="hint" x-show="data.reality_basis==='fictional'">
+                  ✓ 完全虚构 —— 即使后面题材里出现某个真实词汇（如"民国"/"明朝"），
+                  本书也不基于真实历史；下游 agent 可自由编撰人物言行。
+                </p>
+                <p class="hint">改完别忘点顶部的 💾 保存。</p>
+              </div>
+
               <div class="intent-summary" x-show="data.tone_summary">
                 <label>整体气质</label>
                 <p x-text="data.tone_summary"></p>
@@ -1093,6 +1261,53 @@
                 💡 以上信号作为立项的【硬约束】注入下游 agent。
                 Phase 0 生成卖点/套路/文风时会优先遵守这些，而不是自由发挥。
                 如需微调单个字段可切到 JSON 视图编辑后保存。
+              </div>
+
+              <!-- ── 补充情节建议（plot_enhancer Phase -0.7 产出）── -->
+              <div class="plot-supplements-section" x-show="(data.plot_supplements||[]).length > 0">
+                <h4>💡 补充情节建议 <small class="dim">（plot_enhancer 自动生成 · 待你审）</small></h4>
+                <p class="hint">
+                  系统主动反问"只看你写的，故事会不会无聊"——补了几个能让读者翻下一页的钩子。
+                  <b>采纳</b>后会被下游 satisfaction_system / foreshadow_manager / twist_designer 显式落地。
+                  <b>拒绝</b>就直接忽略。
+                </p>
+                <div class="plot-supplements-list">
+                  <template x-for="(ps, i) in (data.plot_supplements || [])" :key="i">
+                    <div class="plot-supplement-card"
+                         :class="ps.adopted === true ? 'ps-adopted' : (ps.adopted === false ? 'ps-rejected' : 'ps-pending')">
+                      <div class="ps-head">
+                        <span class="ps-intensity"
+                              :class="'ps-int-' + (ps.intensity || 'mid')"
+                              x-text="({low:'[暗线]', mid:'[主线钩子]', high:'[核心爆点]'})[ps.intensity] || '[主线钩子]'"></span>
+                        <b x-text="ps.name"></b>
+                        <span class="ps-where" x-show="ps.where_to_inject" x-text="'· ' + ps.where_to_inject"></span>
+                        <span class="ps-status" x-show="ps.adopted === true">✓ 已采纳</span>
+                        <span class="ps-status ps-status-rejected" x-show="ps.adopted === false">✗ 已拒绝</span>
+                      </div>
+                      <div class="ps-body">
+                        <div><b>内容：</b><span x-text="ps.what"></span></div>
+                        <div x-show="ps.why_engaging"><b>读者钩子：</b><span x-text="ps.why_engaging"></span></div>
+                      </div>
+                      <div class="ps-actions">
+                        <button class="btn-sec btn-mini"
+                                :class="ps.adopted === true ? 'btn-primary' : ''"
+                                @click="ps.adopted = (ps.adopted === true) ? null : true; hasEdits = true">
+                          ✓ 采纳
+                        </button>
+                        <button class="btn-sec btn-mini"
+                                :class="ps.adopted === false ? 'btn-danger-mini' : ''"
+                                @click="ps.adopted = (ps.adopted === false) ? null : false; hasEdits = true">
+                          ✗ 拒绝
+                        </button>
+                        <input type="text" class="ps-notes"
+                               :value="ps.notes || ''"
+                               @input="ps.notes = $event.target.value; hasEdits = true"
+                               placeholder="备注（可选——告诉下游怎么落地）">
+                      </div>
+                    </div>
+                  </template>
+                </div>
+                <p class="hint">改完别忘点顶部的 💾 保存。采纳的建议下次 Phase 3 跑爽点/伏笔/反转时会自动落地。</p>
               </div>
             </div>
 
@@ -1301,16 +1516,27 @@
                          placeholder="天赋/传承/系统/穿越自带 等">
                 </div>
                 <div class="ability-row">
-                  <label class="dim">绑外部 LLM</label>
-                  <select :value="a.external_llm_profile || ''"
-                          @change="a.external_llm_profile = $event.target.value; hasEdits = true">
+                  <label class="dim">绑外部 LLM（in-story 真 AI）</label>
+                  <select x-model="a.external_llm_profile"
+                          @change="hasEdits = true">
                     <option value="">— 不绑定（writer 自己写 AI 回答）—</option>
-                    <template x-for="m in (userModels||[])" :key="m.id">
-                      <option :value="m.id" x-text="m.id + ' · ' + (m.display_name || m.model)"></option>
-                    </template>
+                    <!-- 优先列勾了 in_story_ai 的；其他 profile 灰色分组 -->
+                    <optgroup label="🎭 已勾选 in_story_ai 的 profile（推荐）">
+                      <template x-for="m in (userModels||[]).filter(x => (x.usage||[]).includes('in_story_ai'))" :key="m.id">
+                        <option :value="m.id" x-text="m.id + ' · ' + (m.display_name || m.model)"></option>
+                      </template>
+                    </optgroup>
+                    <optgroup label="⚠ 其他 profile（未勾 in_story_ai——可能产出 DeepSeek/Claude 等元语言污染正文）">
+                      <template x-for="m in (userModels||[]).filter(x => !(x.usage||[]).includes('in_story_ai'))" :key="m.id">
+                        <option :value="m.id" x-text="m.id + ' · ' + (m.display_name || m.model)"></option>
+                      </template>
+                    </optgroup>
                   </select>
                   <small class="dim" x-show="a.external_llm_profile" style="flex-basis: 100%;">
-                    🔌 绑定后：写章时主角问《<span x-text="a.name"></span>》的问题会真发给这个 LLM 拿回答（**只发问题，无系统提示词**）；不再让 writer 自己编造回答。
+                    🔌 绑定后：写章时主角问《<span x-text="a.name"></span>》的问题会真发给这个 LLM 拿回答。
+                    系统会自动附加 <b>in-story system prompt</b>（让 AI 扮演 in-story 角色 / 不暴露真实身份 /
+                    根据题材自动切语言风格），输出再经 sanitize 剥 emoji 和元语言。
+                    建议优先选 <b>勾了 in_story_ai 的 profile</b>（在「模型管理」勾选）。
                   </small>
                 </div>
                 <div class="ability-row">
@@ -2049,6 +2275,21 @@
         <!-- Stages -->
         <template x-if="current==='story_stages'">
           <div class="card" x-init="loadStageReviews()">
+            <div class="regen-bar" style="margin-bottom:12px">
+              <template x-for="vi in stageVolumes()" :key="'stage-regen-'+vi">
+                <button class="btn-mini"
+                        @click="regenArg('stages', vi)"
+                        :disabled="regenRunning !== null"
+                        :class="regenRunning && regenRunning.action==='stages' && regenRunning.arg===vi ? 'is-running' : ''">
+                  <span x-show="!(regenRunning && regenRunning.action==='stages' && regenRunning.arg===vi)"
+                        x-text="'🔄 重建第'+vi+'卷舞台'"></span>
+                  <span x-show="regenRunning && regenRunning.action==='stages' && regenRunning.arg===vi">
+                    ⏳ 跑中… <span x-text="regenRunning && regenRunning.secondsElapsed"></span>s
+                  </span>
+                </button>
+              </template>
+              <small class="dim">会同步重建该卷章节大纲</small>
+            </div>
             <template x-for="s in data||[]" :key="s.stage_id">
               <div class="stage-card">
                 <strong>卷<span x-text="s.volume"></span> · <span x-text="s.name"></span></strong>
@@ -2160,16 +2401,32 @@
               </button>
             </div>
             <table class="tbl">
-              <thead><tr><th>#</th><th>卷</th><th>标题</th><th>张力</th><th>字数</th><th>摘要</th><th>设</th><th>读</th><th>话</th><th>操作</th></tr></thead>
-              <tbody>
-                <template x-for="c in data||[]" :key="c.index">
-                  <tr>
-                    <td @click="openChapter(c.index)" style="cursor:pointer" x-text="c.index"></td>
-                    <td @click="openChapter(c.index)" style="cursor:pointer" x-text="'V'+c.volume_index"></td>
-                    <td @click="openChapter(c.index)" style="cursor:pointer"><b x-text="c.title"></b></td>
-                    <td><span class="pill" x-text="c.tension"></span></td>
-                    <td x-text="c.word_count"></td>
-                    <td><small x-text="(c.summary||'').slice(0,50)+'...'"></small></td>
+                <thead><tr><th>#</th><th>卷</th><th>标题</th><th>状态</th><th>张力</th><th>字数</th><th>摘要</th><th>设</th><th>读</th><th>话</th><th title="模拟读者评论">评</th><th>操作</th></tr></thead>
+                <tbody>
+                  <template x-for="c in data||[]" :key="c.row_id || c.index">
+                    <tr>
+                      <td @click="openChapter(c.index, c.is_draft)" style="cursor:pointer" x-text="c.index"></td>
+                      <td @click="openChapter(c.index, c.is_draft)" style="cursor:pointer" x-text="'V'+c.volume_index"></td>
+                      <td @click="openChapter(c.index, c.is_draft)" style="cursor:pointer">
+                        <b x-text="c.title"></b>
+                        <!-- Batch 3:钩子类型小 chip -->
+                        <span class="pill" style="margin-left:4px;font-size:0.75em;background:#e8e8f0"
+                              x-show="c.closing_hook_type"
+                              :title="'钩子类型: ' + hookTypeFull(c.closing_hook_type)"
+                              x-text="hookTypeLabel(c.closing_hook_type)"></span>
+                        <!-- Batch 2:setup 回响数 chip -->
+                        <span class="pill" style="margin-left:2px;font-size:0.75em;background:#e0f5e0"
+                              x-show="c.setup_callbacks_invoked && c.setup_callbacks_invoked.length"
+                              :title="'本章兑现 setup_ledger ' + (c.setup_callbacks_invoked||[]).length + ' 条 (Batch 2 callback)'"
+                              x-text="'回响 ' + (c.setup_callbacks_invoked||[]).length"></span>
+                      </td>
+                      <td>
+                        <span class="pill pill-pending" x-show="c.is_draft">草稿</span>
+                        <span class="pill pill-ok" x-show="!c.is_draft">正文</span>
+                      </td>
+                      <td><span class="pill" x-text="c.tension"></span></td>
+                      <td x-text="c.word_count"></td>
+                      <td><small x-text="(c.summary||'').slice(0,50)+'...'"></small></td>
                     <td>
                       <template x-if="auditBadge(c.index)">
                         <span class="audit-badge"
@@ -2233,12 +2490,28 @@
                                title="本章还没对话审计，点击触发一次">—</small>
                       </template>
                     </td>
+                    <!-- Batch 5:模拟读者评论 chip -->
                     <td>
-                      <button class="btn-mini" @click="openRewrite(c.index, c.title)" title="不满意重写">✍ 重写</button>
-                      <button class="btn-mini" @click="openChat(c.index, c.title)" title="对话调整笔触（不改骨架）">💬 对话</button>
-                      <button class="btn-mini" @click="openChapter(c.index)" title="查看正文">👁</button>
-                      <button class="btn-mini btn-danger-mini" @click="deleteChapter(c.index, 'only_this')"
-                              title="只删除本章（不影响后续章节）">🗑 只此</button>
+                      <template x-if="c.simulated_comments && c.simulated_comments.length">
+                        <span class="audit-badge"
+                              :class="commentBadgeClass(c.simulated_comments)"
+                              @click="openSimulatedComments(c.index, c.title, c.simulated_comments)"
+                              :title="'点击查看 ' + c.simulated_comments.length + ' 条模拟评论'"
+                              style="cursor:pointer"
+                              x-text="commentBadgeText(c.simulated_comments)"></span>
+                      </template>
+                      <template x-if="!c.simulated_comments || !c.simulated_comments.length">
+                        <small class="dim">—</small>
+                      </template>
+                    </td>
+                      <td>
+                        <button class="btn-mini" @click="openRewrite(c.index, c.title)" title="不满意重写">✍ 重写</button>
+                        <button class="btn-mini btn-primary" x-show="c.is_draft" @click="acceptDraft(c.index)" title="把草稿保存成正式正文">保存为正文</button>
+                        <button class="btn-mini btn-danger-mini" x-show="c.is_draft" @click="discardDraft(c.index)" title="只删除这份草稿，不影响正文和后续章节">弃用草稿</button>
+                        <button class="btn-mini" x-show="!c.is_draft" @click="openChat(c.index, c.title)" title="对话调整笔触（不改骨架）">💬 对话</button>
+                        <button class="btn-mini" @click="openChapter(c.index, c.is_draft)" title="查看正文">👁</button>
+                        <button class="btn-mini btn-danger-mini" @click="deleteChapter(c.index, 'only_this')"
+                                title="只删除本章（不影响后续章节）">🗑 只此</button>
                       <button class="btn-mini btn-danger-mini" @click="deleteChapter(c.index, 'this_and_after')"
                               title="删除本章及之后所有章节">🗑↓ 此及后</button>
                     </td>
@@ -2426,6 +2699,79 @@
         </div>
         </template>
 
+        <!-- Module Flow Graph -->
+        <template x-if="current==='module_flow'">
+          <div class="module-flow-wrap">
+            <div class="card module-flow-head">
+              <div>
+                <h3>模块流程图</h3>
+                <p class="dim">点击节点查看它的上游输入、下游影响和可用重建动作。</p>
+              </div>
+              <div class="module-flow-controls">
+                <label>卷号</label>
+                <input type="number" min="1" step="1" x-model.number="flowVolume">
+                <button class="btn-sec" @click="load('module_flow')">刷新</button>
+              </div>
+            </div>
+
+            <div class="module-flow-layout">
+              <div class="card module-flow-canvas-card">
+                <div id="moduleFlowNetwork" class="module-flow-network"></div>
+              </div>
+
+              <div class="card module-flow-detail">
+                <template x-if="selectedFlowNode()">
+                  <div>
+                    <div class="module-flow-node-title">
+                      <span class="pill" x-text="selectedFlowNode().phase"></span>
+                      <h3 x-text="selectedFlowNode().label"></h3>
+                    </div>
+                    <p x-text="selectedFlowNode().desc"></p>
+                    <div class="module-flow-actions">
+                      <button class="btn-sec" @click="load(selectedFlowNode().section)">打开模块</button>
+                      <button class="btn-primary"
+                              :disabled="!selectedFlowNode().can_rebuild"
+                              @click="rebuildFlowNode(selectedFlowNode())">
+                        重建这个模块
+                      </button>
+                    </div>
+                    <small class="dim" x-show="selectedFlowNode().rebuild_mode === 'arg'"
+                           x-text="'该动作使用上方卷号：' + (flowVolume || 1)"></small>
+
+                    <h4>上游输入</h4>
+                    <div class="module-flow-chipline">
+                      <template x-for="n in flowLinkedNodes(selectedFlowNode().upstream)" :key="n.id">
+                        <button class="flow-chip upstream" @click="selectedFlowNodeId = n.id; drawModuleFlowGraph()" x-text="n.label"></button>
+                      </template>
+                      <span class="dim" x-show="!selectedFlowNode().upstream.length">无</span>
+                    </div>
+
+                    <h4>下游影响</h4>
+                    <div class="module-flow-chipline">
+                      <template x-for="n in flowLinkedNodes(selectedFlowNode().downstream)" :key="n.id">
+                        <button class="flow-chip downstream" @click="selectedFlowNodeId = n.id; drawModuleFlowGraph()" x-text="n.label"></button>
+                      </template>
+                      <span class="dim" x-show="!selectedFlowNode().downstream.length">无</span>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <div class="module-flow-list">
+              <template x-for="n in (data?.nodes || [])" :key="n.id">
+                <button class="module-flow-card"
+                        :class="{'selected': selectedFlowNodeId === n.id}"
+                        @click="selectedFlowNodeId = n.id; drawModuleFlowGraph()">
+                  <span class="module-flow-card-phase" x-text="n.phase"></span>
+                  <strong x-text="n.label"></strong>
+                  <small x-text="'上游 ' + (n.upstream || []).length + ' / 下游 ' + (n.downstream || []).length"></small>
+                </button>
+              </template>
+            </div>
+          </div>
+        </template>
+
         <!-- 📋 状态审计（复盘）-->
         <template x-if="current==='state_audit'">
           <div>
@@ -2519,13 +2865,19 @@
 </div>
 
 <!-- 章节正文浮层 -->
-<div class="chapter-modal" x-show="chapterModal" @click.self="chapterModal=null">
-  <div class="modal-body" x-show="chapterModal">
-    <button class="close" @click="chapterModal=null">✕</button>
-    <h2 x-text="chapterModal?.title || ('第'+chapterModal?.index+'章')"></h2>
-    <div class="chapter-actions">
-      <button class="btn-mini" @click="openRewrite(chapterModal.index, chapterModal.title)">✍ 不满意重写</button>
-      <small class="dim" x-show="chapterModal?.content">字数 <b x-text="countChapterWords(chapterModal?.content || '')"></b></small>
+  <div class="chapter-modal" x-show="chapterModal" @click.self="chapterModal=null">
+    <div class="modal-body" x-show="chapterModal">
+      <button class="close" @click="chapterModal=null">✕</button>
+      <h2 x-text="chapterModal?.title || ('第'+chapterModal?.index+'章')"></h2>
+      <div class="draft-banner" x-show="chapterModal?.is_draft">
+        <b>这是草稿</b>
+        <span x-text="chapterModal?.draft_reason || '本章未通过定稿前校验，尚未保存为正式正文。'"></span>
+        <button class="btn-mini btn-primary" @click="acceptDraft(chapterModal.index)">保存为正文</button>
+        <button class="btn-mini btn-danger-mini" @click="discardDraft(chapterModal.index)">弃用草稿</button>
+      </div>
+      <div class="chapter-actions">
+        <button class="btn-mini" @click="openRewrite(chapterModal.index, chapterModal.title)">✍ 不满意重写</button>
+        <small class="dim" x-show="chapterModal?.content">字数 <b x-text="countChapterWords(chapterModal?.content || '')"></b></small>
     </div>
     <pre x-text="chapterModal?.content"></pre>
   </div>

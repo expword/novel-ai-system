@@ -35,6 +35,9 @@ function app() {
     chapterModal: null,
     darkMode: true,
     network: null,
+    moduleFlowNetwork: null,
+    selectedFlowNodeId: "",
+    flowVolume: 1,
     wealthChart: null,
     spChart: null,
     tensionChart: null,
@@ -43,6 +46,8 @@ function app() {
     intentStartAfter: true,
     analyzing: false,
     creating: false,
+    // creative_intent 面板的真实人物 chip 增删临时输入框
+    newRealPerson: "",
     // 追加意图
     intentAddition: "",
     intentRefineRegen: true,              // 兼容：老字段，等同于 cascade_level=phase0
@@ -89,10 +94,16 @@ function app() {
     newProj: { id: "", title: "", genre: "玄幻", customGenreText: "", theme: "", intent_description: "", analyze_now: true, start_after: true, mode: "stepwise" },
 
     // ── 新建小说向导（选择题模式）─────────────────────
-    wizardMode: true,                    // true=向导 5 步点击，false=高级 blank 表单
-    wizardStep: 1,                       // 1..5
-    wizardStepLabels: ["题材", "套路", "主角", "基调", "平台"],
+    wizardMode: true,                    // true=向导 6 步点击，false=高级 blank 表单
+    wizardStep: 1,                       // 1..6
+    wizardStepLabels: ["根基", "题材", "套路", "主角", "基调", "平台"],
     wizardPicks: {
+      // Step 1 新增：故事根基（真实 / 虚构）
+      reality_basis: "",       // real_history | real_adapted | fictional
+      historical_setting: "",  // 真实模式下的朝代/时期/区域
+      real_persons: [],        // 真实模式下要尊重的真实历史人物名单
+      realPersonInput: "",     // chip 添加用的临时输入框
+      // Step 2-6
       genre: "",
       customGenreText: "",   // 选 __custom__ 时用户自定义题材文本
       tropes: [],        // 可多选
@@ -253,6 +264,7 @@ function app() {
         world_events: "⚙ 元系统 · 世界事件",
         approvals:    "⚙ 元系统 · HITL 审批",
         prompts:      "⚙ 元系统 · 📝 提示词管理",
+        module_flow:  "⚙ 元系统 · 模块流程图",
       };
       return titles[this.current] || (this.current ? this.current : "选择左侧模块开始");
     },
@@ -261,6 +273,13 @@ function app() {
       return ["trope_library", "tone_manual", "conflict_ladder", "emotion_curve",
               "economy", "geography", "relationship_web", "power_system",
               "lines", "twist_system"].includes(this.current);
+    },
+
+    stageVolumes() {
+      const nums = (this.data || [])
+        .map(s => Number(s.volume))
+        .filter(n => Number.isFinite(n) && n > 0);
+      return [...new Set(nums)].sort((a, b) => a - b);
     },
 
     // 警告里有任何 level=error 的吗？——徽章变红
@@ -561,47 +580,85 @@ function app() {
     },
 
     async markGroupReviewed() {
-      if (!this.currentProject || !this.currentGroupId) return;
-      if (this.groupActed(this.currentGroupId)) return;  // 二选一保护
+      if (!this.currentProject) {
+        this.error = "确认失败：当前没选中项目";
+        return;
+      }
+      if (!this.currentGroupId) {
+        this.error = "确认失败：当前没有已完成的阶段组。"
+          + "可能项目还没开始跑，或后端 next_phase_group 接口暂未返回。";
+        return;
+      }
+      if (this.groupActed(this.currentGroupId)) {
+        const label = this.actedGroups[this.currentGroupId] === "reviewed" ? "确定应用" : "取消应用";
+        this.error = `本阶段已点过「${label}」，不能再操作。`;
+        return;
+      }
       try {
         const r = await fetch(`/api/projects/${encodeURIComponent(this.currentProject)}/stepwise/mark_reviewed`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ group_id: this.currentGroupId }),
         });
+        let j = {};
+        try { j = await r.json(); } catch (_) {}
         if (r.ok) {
           this.flash = `✓ 已确认${this._groupNameOf(this.currentGroupId)}阶段的修改`;
           this.actedGroups = { ...this.actedGroups, [this.currentGroupId]: "reviewed" };
+          this.error = "";
           await this.loadVersions();
         } else {
-          const j = await r.json();
-          this.error = j.error || "确认失败";
+          this.error = `确认失败（HTTP ${r.status}）：${j.error || "未知错误"}`;
         }
-      } catch (e) { this.error = e.message; }
+      } catch (e) { this.error = `网络异常：${e.message}`; }
     },
 
     async rollbackGroup() {
-      if (!this.currentProject || !this.currentGroupId) return;
-      if (this.groupActed(this.currentGroupId)) return;  // 二选一保护
-      if (!confirm(`确认回滚【${this._groupNameOf(this.currentGroupId)}】阶段到完成时的快照？\n这会丢掉你在审核期间的所有编辑。`)) return;
+      // ── 显式诊断：所有失败路径都给用户视觉反馈，不再静默 return ──
+      if (!this.currentProject) {
+        this.error = "回滚失败：当前没选中项目";
+        return;
+      }
+      if (!this.currentGroupId) {
+        this.error = "回滚失败：当前没有已完成的阶段组（currentGroupId 为空）。"
+          + "可能原因：① 项目还没开始跑；② 你是 auto 模式跑的，没写回滚快照；"
+          + "③ 后端 next_phase_group 接口暂时没返回——刷新页面试试。";
+        return;
+      }
+      if (this.groupActed(this.currentGroupId)) {
+        const label = this.actedGroups[this.currentGroupId] === "reviewed" ? "确定应用" : "取消应用";
+        this.error = `本阶段已点过「${label}」，不能再操作。如需再次回滚，刷新页面后重试。`;
+        return;
+      }
+      if (!confirm(`确认回滚【${this._groupNameOf(this.currentGroupId)}】阶段到完成时的快照？\n这会丢掉你在审核期间的所有编辑。`)) {
+        this.flash = "已取消回滚操作";
+        return;
+      }
+      this.flash = `⏳ 正在回滚【${this._groupNameOf(this.currentGroupId)}】...`;
       try {
         const r = await fetch(`/api/projects/${encodeURIComponent(this.currentProject)}/stepwise/rollback`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ group_id: this.currentGroupId }),
         });
-        const j = await r.json();
+        let j = {};
+        try { j = await r.json(); } catch (_) {}
         if (r.ok) {
           this.flash = `↺ 已回滚到${this._groupNameOf(this.currentGroupId)}阶段完成时的状态`;
           this.actedGroups = { ...this.actedGroups, [this.currentGroupId]: "rolled_back" };
+          this.error = "";
           // 刷所有可能被改的东西
           await this.refreshState();
           await this.refreshPhaseGroups();
           if (this.current) await this.load(this.current);
         } else {
-          this.error = j.error || "回滚失败";
+          this.error = `回滚失败（HTTP ${r.status}）：${j.error || "未知错误"}`;
+          this.flash = "";
         }
-      } catch (e) { this.error = e.message; }
+      } catch (e) {
+        this.error = `回滚网络异常：${e.message}`;
+        this.flash = "";
+      }
     },
 
     _groupNameOf(id) {
@@ -656,9 +713,11 @@ function app() {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              goal:       this.nextChapterPreview.outline_goal || "",
-              purpose:    this.nextChapterPreview.outline_purpose || "",
-              expression: this.nextChapterPreview.outline_expression || "",
+              goal:           this.nextChapterPreview.outline_goal || "",
+              purpose:        this.nextChapterPreview.outline_purpose || "",
+              expression:     this.nextChapterPreview.outline_expression || "",
+              chapter_focus:  this.nextChapterPreview.outline_chapter_focus || "",
+              reader_hook:    this.nextChapterPreview.outline_reader_hook || "",
             }),
           }
         );
@@ -944,24 +1003,65 @@ function app() {
 
     // ── 向导导航 ─────────────────────────────────────
     wizardCanGoNext() {
+      // Step 1：必须选根基；真实模式下还必须填历史背景
       if (this.wizardStep === 1) {
+        const rb = this.wizardPicks.reality_basis;
+        if (!rb) return false;
+        if ((rb === "real_history" || rb === "real_adapted")
+            && !(this.wizardPicks.historical_setting || "").trim()) return false;
+        return true;
+      }
+      // Step 2：题材
+      if (this.wizardStep === 2) {
         if (!this.wizardPicks.genre) return false;
-        // 选了自定义但没填文本 → 不能下一步
         if (this.wizardPicks.genre === "__custom__"
             && !(this.wizardPicks.customGenreText || "").trim()) return false;
         return true;
       }
-      if (this.wizardStep === 2) return this.wizardPicks.tropes.length > 0;
-      if (this.wizardStep === 3) return !!this.wizardPicks.archetype;
-      if (this.wizardStep === 4) return !!this.wizardPicks.tone;
+      if (this.wizardStep === 3) return this.wizardPicks.tropes.length > 0;
+      if (this.wizardStep === 4) return !!this.wizardPicks.archetype;
+      if (this.wizardStep === 5) return !!this.wizardPicks.tone;
       return true;
     },
 
     wizardCanSubmit() {
       const p = this.wizardPicks;
+      // 根基 + 真实模式下的历史背景
+      if (!p.reality_basis) return false;
+      if ((p.reality_basis === "real_history" || p.reality_basis === "real_adapted")
+          && !(p.historical_setting || "").trim()) return false;
       const genreOk = p.genre && (p.genre !== "__custom__" || (p.customGenreText || "").trim());
       return genreOk && p.tropes.length > 0 && p.archetype && p.tone && p.audience
              && p.title && p.title.trim().length > 0;
+    },
+
+    // creative_intent 面板：把 newRealPerson 输入框的人物 push 进 data.real_persons
+    addRealPersonToIntent() {
+      const v = (this.newRealPerson || "").trim();
+      if (!v || !this.data) return;
+      if (!Array.isArray(this.data.real_persons)) this.data.real_persons = [];
+      const parts = v.split(/[、，,;；\s]+/).map(s => s.trim()).filter(Boolean);
+      for (const p of parts) {
+        if (!this.data.real_persons.includes(p)) {
+          this.data.real_persons.push(p);
+        }
+      }
+      this.newRealPerson = "";
+      this.hasEdits = true;
+    },
+
+    // 真实人物 chip 增删（向导）
+    wizardAddRealPerson() {
+      const v = (this.wizardPicks.realPersonInput || "").trim();
+      if (!v) return;
+      // 允许"李世民、长孙皇后、魏征"这种逗号/顿号分隔
+      const parts = v.split(/[、，,;；\s]+/).map(s => s.trim()).filter(Boolean);
+      for (const p of parts) {
+        if (!this.wizardPicks.real_persons.includes(p)) {
+          this.wizardPicks.real_persons.push(p);
+        }
+      }
+      this.wizardPicks.realPersonInput = "";
     },
 
     // 向导提交时取实际题材字符串（自定义/预设统一）
@@ -974,7 +1074,7 @@ function app() {
 
     wizardNext() {
       if (!this.wizardCanGoNext()) return;
-      if (this.wizardStep < 5) this.wizardStep++;
+      if (this.wizardStep < 6) this.wizardStep++;
     },
 
     wizardPrev() {
@@ -1014,7 +1114,25 @@ function app() {
         : p.genre;
       const tropes = p.tropes.join("、");
       const audience = p.audience;
+
+      // ── 故事根基段（首段最显眼，强化下游 LLM 的注意力）──
+      let basisLine = "";
+      if (p.reality_basis === "real_history") {
+        basisLine = `【故事根基】严格基于真实历史 —— 朝代/事件/人物言行须符合史料。`;
+        if (p.historical_setting) basisLine += `历史背景：${p.historical_setting}。`;
+        if (p.real_persons.length) basisLine += `须尊重的真实人物：${p.real_persons.join("、")}。`;
+        basisLine += `\n`;
+      } else if (p.reality_basis === "real_adapted") {
+        basisLine = `【故事根基】基于真实人物/事件改编 —— 大方向尊重史料，细节可文学化演绎。`;
+        if (p.historical_setting) basisLine += `历史背景：${p.historical_setting}。`;
+        if (p.real_persons.length) basisLine += `须尊重的真实人物：${p.real_persons.join("、")}。`;
+        basisLine += `\n`;
+      } else if (p.reality_basis === "fictional") {
+        basisLine = `【故事根基】完全虚构 —— 不受真实人物史料约束，可自由编撰。\n`;
+      }
+
       let base = (
+        basisLine +
         `我想写一本【${genre}】小说，面向【${audience}】读者。\n` +
         `故事主打【${tropes}】这类套路（${p.tropes.length}个方向）。\n` +
         `主角是【${p.archetype}】的类型——` + this.archetypeDetail(p.archetype) + `\n` +
@@ -1051,13 +1169,21 @@ function app() {
         analyze_now: this.newProj.analyze_now,
         start_after: this.newProj.start_after,
         mode: this.newProj.mode || "stepwise",
+        // ── 故事根基（真实 / 虚构）──
+        reality_basis: this.wizardPicks.reality_basis || "fictional",
+        historical_setting: (this.wizardPicks.historical_setting || "").trim(),
+        real_persons: [...this.wizardPicks.real_persons],
       };
 
       // 乐观 UI：立刻关 modal、展示 toast，不等后端
       const savedWizardState = JSON.parse(JSON.stringify(this.wizardPicks));
       this.showNewProject = false;
       this.wizardStep = 1;
-      this.wizardPicks = { genre: "", customGenreText: "", tropes: [], archetype: "", tone: "", audience: "", title: "", extraNotes: "" };
+      this.wizardPicks = {
+        reality_basis: "", historical_setting: "", real_persons: [], realPersonInput: "",
+        genre: "", customGenreText: "", tropes: [], archetype: "", tone: "",
+        audience: "", title: "", extraNotes: "",
+      };
       this._wizardIntentOverride = undefined;
       this.flash = `⏳ 正在创建《${title}》... 后端需要 ~10-30 秒，可在左侧项目列表看到新项目出现`;
       this.creating = true;
@@ -1227,6 +1353,7 @@ function app() {
         main: "🎯 主模型",
         reviewer: "🔍 审核",
         fallback: "🛟 备用",
+        in_story_ai: "🎭 叙事内 AI",
         custom: "📌 自定义",
       }[u] || u || "—");
     },
@@ -1293,6 +1420,29 @@ function app() {
       this.showModelEdit = true;
     },
 
+    onUsageToggle(usage, ev) {
+      // UNIQUE_USAGES 互斥：本 model 勾上某 unique usage 时，
+      // 如果别的 model 已占用同 usage → confirm 是否替换。
+      // 取消勾选不做检查（用户自由）。
+      if (!ev.target.checked) return;
+      const UNIQUE = new Set(["main", "planner", "reviewer", "extractor"]);
+      if (!UNIQUE.has(usage)) return;
+      const myId = this.editingModel.id;
+      const conflict = (this.userModels || []).find(m =>
+        m.id !== myId && (m.usage || []).includes(usage)
+      );
+      if (!conflict) return;  // 无冲突
+      const ok = confirm(
+        `「${usage}」usage 当前已被 model "${conflict.id}" 占用。\n\n` +
+        `保存时后端会自动从 "${conflict.id}" 移除「${usage}」，让本 model 接管。\n\n` +
+        `确认替换？（取消则撤销本次勾选）`
+      );
+      if (!ok) {
+        // 用户取消——回退 checkbox 状态
+        this.editingModel.usage = (this.editingModel.usage || []).filter(u => u !== usage);
+      }
+    },
+
     async saveModelEdit() {
       if (!this.editingModel.display_name || !this.editingModel.base_url || !this.editingModel.model) {
         this.error = "显示名 / BASE_URL / MODEL 必填";
@@ -1307,6 +1457,8 @@ function app() {
         this.editingModel.usage = [];
       }
       this.savingModel = true;
+      this.error = "";
+      this.flash = "正在验证模型连通性...";
       try {
         const isEdit = !!this.editingModel.id;
         const url = isEdit
@@ -1320,7 +1472,8 @@ function app() {
         });
         const j = await r.json();
         if (r.ok) {
-          this.flash = isEdit ? "✓ 模型已更新" : "✓ 模型已添加";
+          const latency = j.test && j.test.latency_ms ? `（验证 ${j.test.latency_ms}ms）` : "";
+          this.flash = (isEdit ? "✓ 模型已更新" : "✓ 模型已添加") + latency;
           this.showModelEdit = false;
           await this.loadModels();
         } else {
@@ -1712,6 +1865,71 @@ function app() {
       };
     },
 
+    // ── Batch 3:钩子类型 chip 中文映射 ────────────────────────────
+    hookTypeLabel(t) {
+      const map = {
+        suspense: '悬', reversal: '转', info_reveal: '信',
+        emotional: '情', physical: '物', death: '死', cliff: '崖',
+      };
+      return map[t] || '';
+    },
+    hookTypeFull(t) {
+      const map = {
+        suspense: '悬念钩', reversal: '反转钩', info_reveal: '信息钩',
+        emotional: '情感钩', physical: '物理钩', death: '死亡钩', cliff: '悬崖钩',
+      };
+      return map[t] || t || '';
+    },
+
+    // ── Batch 5:模拟读者评论 chip / 弹窗 ─────────────────────────
+    commentBadgeText(comments) {
+      if (!comments || !comments.length) return '';
+      const pos = comments.filter(c => c.sentiment === 'positive').length;
+      const neg = comments.filter(c =>
+        c.sentiment === 'negative' || c.sentiment === 'critical'
+      ).length;
+      let s = '💬' + comments.length;
+      if (pos) s += ' 👍' + pos;
+      if (neg) s += ' 👎' + neg;
+      return s;
+    },
+    commentBadgeClass(comments) {
+      if (!comments || !comments.length) return {};
+      const pos = comments.filter(c => c.sentiment === 'positive').length;
+      const neg = comments.filter(c =>
+        c.sentiment === 'negative' || c.sentiment === 'critical'
+      ).length;
+      return {
+        'audit-ok':   pos > neg && neg === 0,
+        'audit-warn': neg > 0 && neg <= pos,
+        'audit-bad':  neg > pos,
+      };
+    },
+    openSimulatedComments(index, title, comments) {
+      if (!comments || !comments.length) {
+        this.report = '<strong>本章无模拟评论</strong>';
+        return;
+      }
+      const grouped = { 追读派: [], 挑刺派: [], 路过派: [], 章评党: [] };
+      comments.forEach(c => {
+        (grouped[c.reader_type] || grouped['路过派']).push(c);
+      });
+      const esc = (s) => String(s || '').replace(/[&<>"']/g,
+        (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+      let html = `<strong>第 ${index} 章《${esc(title)}》模拟读者评论 (${comments.length} 条):</strong>`;
+      for (const [type, list] of Object.entries(grouped)) {
+        if (!list.length) continue;
+        html += `<h4 style="margin:0.6em 0 0.2em">${type} (${list.length})</h4><ul style="margin:0;padding-left:1.4em">`;
+        list.forEach(c => {
+          const emoji = c.sentiment === 'positive' ? '👍' :
+            (c.sentiment === 'critical' || c.sentiment === 'negative') ? '👎' : '💬';
+          html += `<li>${emoji} <b>${esc(c.nickname)}</b>: ${esc(c.text)}</li>`;
+        });
+        html += '</ul>';
+      }
+      this.report = html;
+    },
+
     async openDialogueAudit(index, title) {
       this.dialogueModal = { index, title, audit: null, loading: true };
       try {
@@ -1887,16 +2105,27 @@ function app() {
       this.report = "";
       // 进入 power_system 面板时自动拉一次 user_models（能力面板的"绑外部 LLM"下拉用）
       if (section === "power_system" && (!this.userModels || this.userModels.length === 0)) {
-        this.loadModels().catch(() => {});
+        await this.loadModels().catch(() => {});
       }
       try {
         const r = await fetch(this._api(`/api/section/${section}`));
         if (!r.ok) { this.error = await r.text(); return; }
         this.data = await r.json();
         this.rawText = JSON.stringify(this.data, null, 2);
-        // 意图面板：把 state 里已存的描述回填到草稿框
+        // 意图面板：把 state 里已存的描述回填到草稿框；兜底新字段以免老 state 没这些 key
         if (section === "creative_intent") {
           this.intentDraft = this.data.raw_description || "";
+          if (!this.data.reality_basis) this.data.reality_basis = "fictional";
+          if (!Array.isArray(this.data.real_persons)) this.data.real_persons = [];
+          if (this.data.historical_setting == null) this.data.historical_setting = "";
+          if (this.data.respect_real_figures == null) this.data.respect_real_figures = false;
+          this.newRealPerson = "";
+        }
+        if (section === "module_flow") {
+          this.flowVolume = this.data.default_arg || this.flowVolume || 1;
+          if (!this.selectedFlowNodeId && this.data.nodes && this.data.nodes.length) {
+            this.selectedFlowNodeId = this.data.nodes[0].id;
+          }
         }
         // 已完成章节面板：加载三种审计汇总
         if (section === "completed_chapters") {
@@ -2115,7 +2344,85 @@ function app() {
       }
     },
 
+    flowNodeById(id) {
+      return ((this.data && this.data.nodes) || []).find(n => n.id === id) || null;
+    },
+
+    selectedFlowNode() {
+      return this.flowNodeById(this.selectedFlowNodeId) || ((this.data && this.data.nodes) || [])[0] || null;
+    },
+
+    flowLinkedNodes(ids) {
+      return (ids || []).map(id => this.flowNodeById(id)).filter(Boolean);
+    },
+
+    async drawModuleFlowGraph() {
+      if (!this.data || !Array.isArray(this.data.nodes)) return;
+      await this.ensureVisNetwork();
+      const container = document.getElementById("moduleFlowNetwork");
+      if (!container || !window.vis) return;
+      if (!this.selectedFlowNodeId && this.data.nodes.length) {
+        this.selectedFlowNodeId = this.data.nodes[0].id;
+      }
+      const phaseColors = {
+        "1 起点": "#3b82f6",
+        "2 定位": "#22c55e",
+        "3 蓝图": "#f59e0b",
+        "4 世界": "#06b6d4",
+        "5 人物": "#ec4899",
+        "6 情节": "#8b5cf6",
+        "7 章节": "#ef4444",
+        "8 正文": "#94a3b8",
+      };
+      const nodes = this.data.nodes.map(n => ({
+        id: n.id,
+        label: n.label,
+        title: `${n.phase}\n${n.desc || ""}`,
+        shape: "box",
+        margin: 10,
+        color: {
+          background: n.id === this.selectedFlowNodeId ? "#fbbf24" : "#1f2937",
+          border: phaseColors[n.phase] || "#64748b",
+          highlight: { background: "#fbbf24", border: "#f59e0b" },
+        },
+        font: { color: n.id === this.selectedFlowNodeId ? "#111827" : "#e5e7eb", size: 14 },
+      }));
+      const edges = (this.data.edges || []).map(e => ({
+        from: e.from,
+        to: e.to,
+        arrows: "to",
+        color: { color: "#64748b", highlight: "#fbbf24" },
+        smooth: { type: "cubicBezier", forceDirection: "horizontal", roundness: 0.35 },
+      }));
+      if (this.moduleFlowNetwork) this.moduleFlowNetwork.destroy();
+      this.moduleFlowNetwork = new vis.Network(container, { nodes, edges }, {
+        layout: { hierarchical: { enabled: true, direction: "LR", sortMethod: "directed", levelSeparation: 150, nodeSpacing: 120 } },
+        physics: false,
+        interaction: { hover: true, navigationButtons: true, keyboard: true },
+      });
+      this.moduleFlowNetwork.on("click", params => {
+        if (params.nodes && params.nodes.length) {
+          this.selectedFlowNodeId = params.nodes[0];
+          this.drawModuleFlowGraph();
+        }
+      });
+    },
+
+    async rebuildFlowNode(node) {
+      if (!node || !node.can_rebuild) return;
+      const label = node.label || node.id;
+      if (!confirm(`确认重建【${label}】？\n\n会覆盖该模块当前生成结果，并自动留下版本快照。`)) return;
+      if (node.rebuild_mode === "arg") {
+        await this.regenArg(node.rebuild_action, this.flowVolume || 1);
+      } else {
+        await this.regen(node.rebuild_action);
+      }
+    },
+
     async renderVisualizations() {
+      if (this.current === "module_flow") {
+        await this.drawModuleFlowGraph();
+      }
       if (this.current === "relationship_web") {
         await this.ensureVisNetwork();
         this.drawRelationshipGraph();
@@ -2717,20 +3024,6 @@ function app() {
       } catch (e) { this.error = e.message; }
     },
 
-    async runDrift() {
-      try {
-        const r = await fetch(this._api("/api/drift?window=10"));
-        const j = await r.json();
-        if (!j.has_drift) {
-          this.report = "<strong>✓ 最近 10 章无明显漂移</strong>";
-        } else {
-          const areas = Object.entries(j.areas || {});
-          this.report = "<strong>漂移报告：</strong><ul>" +
-            areas.map(([k, v]) => `<li>[${k}] ${v.recommendation || JSON.stringify(v)}</li>`).join("") + "</ul>";
-        }
-      } catch (e) { this.error = e.message; }
-    },
-
     async deleteChapter(index, mode = "this_and_after") {
       // 两种模式清楚区分
       let confirmMsg;
@@ -2822,9 +3115,10 @@ function app() {
       } catch (e) { this.error = e.message; }
     },
 
-    async openChapter(index) {
+    async openChapter(index, draft = false) {
       try {
-        const r = await fetch(this._api(`/api/chapter/${index}`));
+        const suffix = draft ? "?draft=1" : "";
+        const r = await fetch(this._api(`/api/chapter/${index}${suffix}`));
         const j = await r.json();
         if (r.ok) {
           this.chapterModal = { index, ...j, title: (j.summary && j.summary.title) || ("第" + index + "章") };
@@ -2838,6 +3132,68 @@ function app() {
             console.warn("chapter 404 detail:", j);
           }
           this.error = msg;
+        }
+      } catch (e) { this.error = e.message; }
+    },
+
+    async acceptDraft(index, overwrite = false) {
+      const ok = confirm(
+        `第 ${index} 章当前是未通过定稿前校验的草稿。\n\n` +
+        `保存为正文后，系统会把它视为正式章节继续往后写；这不会自动修复原来的 canon/外部 AI 违规。${overwrite ? "\n\n注意：这次会覆盖已有正式正文。" : ""}\n\n` +
+        `确定保存为正文吗？`
+      );
+      if (!ok) return;
+      this.error = "";
+      try {
+        const r = await fetch(this._api(`/api/chapter/${index}/accept_draft`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overwrite }),
+        });
+        const j = await r.json();
+        if (r.ok) {
+          this.flash = `✓ 第 ${index} 章草稿已保存为正文`;
+          if (this.chapterModal && this.chapterModal.index === index) {
+            this.chapterModal.is_draft = false;
+            this.chapterModal.status = "final";
+            this.chapterModal.draft_reason = "";
+            this.chapterModal.summary = j.summary || this.chapterModal.summary;
+          }
+          if (this.current === "completed_chapters") {
+            await this.load("completed_chapters");
+          }
+          await this.refreshProjectStatus?.();
+          await this.refreshState?.();
+        } else if (r.status === 409) {
+          const overwriteOk = confirm("正式正文已经存在。要用这份草稿覆盖正式正文吗？");
+          if (overwriteOk) return this.acceptDraft(index, true);
+        } else {
+          this.error = j.error || "保存草稿失败";
+        }
+      } catch (e) { this.error = e.message; }
+    },
+
+    async discardDraft(index) {
+      const ok = confirm(
+        `弃用第 ${index} 章草稿？\n\n` +
+        `这只会删除 .draft 草稿文件，不会删除正式正文，不会回滚章节进度，也不会影响后续章节。`
+      );
+      if (!ok) return;
+      this.error = "";
+      try {
+        const r = await fetch(this._api(`/api/chapter/${index}/draft`), { method: "DELETE" });
+        const j = await r.json();
+        if (r.ok) {
+          this.flash = `✓ 第 ${index} 章草稿已弃用`;
+          if (this.chapterModal && this.chapterModal.index === index && this.chapterModal.is_draft) {
+            this.chapterModal = null;
+          }
+          if (this.current === "completed_chapters") {
+            await this.load("completed_chapters");
+          }
+          await this.refreshStatus?.();
+        } else {
+          this.error = j.error || "弃用草稿失败";
         }
       } catch (e) { this.error = e.message; }
     },

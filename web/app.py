@@ -14,7 +14,6 @@ API 一览：
   POST /api/approvals/<id>/approve        — 批准某个审核
   GET  /api/chapter/<index>               — 读某章正文
   GET  /api/chapter_summaries             — 已完成章节摘要（图表用）
-  GET  /api/drift                         — 跑一次漂移检测
   GET  /api/invariants                    — 一致性检查报告
 """
 from __future__ import annotations
@@ -3879,6 +3878,15 @@ def _twist_system_to_dict(ts):
 
 
 def _summary_to_dict(c):
+    # Batch 2/3/5 新字段全部 dump,前端可显示 callback / hook_type / 模拟评论
+    comments = []
+    for sc in getattr(c, "simulated_comments", None) or []:
+        comments.append({
+            "reader_type": sc.reader_type,
+            "nickname": sc.nickname,
+            "text": sc.text,
+            "sentiment": sc.sentiment,
+        })
     return {
         "index": c.index,
         "volume_index": c.volume_index,
@@ -3889,7 +3897,9 @@ def _summary_to_dict(c):
         "key_events": c.key_events,
         "sp_triggered": c.sp_triggered,
         "closing_hook": c.closing_hook,
-        "pacing": c.pacing_stats.__dict__ if c.pacing_stats else None,
+        "closing_hook_type": getattr(c, "closing_hook_type", "") or "",
+        "setup_callbacks_invoked": list(getattr(c, "setup_callbacks_invoked", []) or []),
+        "simulated_comments": comments,
         "is_draft": False,
         "status": "final",
         "row_id": f"{c.index}:final",
