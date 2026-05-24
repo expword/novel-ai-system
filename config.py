@@ -99,7 +99,9 @@ MIN_PASS_SCORE = 8  # 审校通过分数线（满分10，收紧：从 7→8）
 # ── 并发 ──────────────────────────────────────────
 # LLM 并发数——LLM 调用是 I/O 密集，可多线程并发
 # 过高会打爆 provider 的 rate limit；保守 3-5 比较安全
-PARALLEL_WORKERS = 4
+# (P1 优化:从 4 上调到 6,提升人物档案/能力深化阶段的并发,
+#  受 LLM_MAX_CONCURRENT=8 全局上限约束,不会打爆 provider)
+PARALLEL_WORKERS = 6
 
 # ── LLM 全局池 ────────────────────────────────────
 # 所有 LLM 调用透明走 llm_pool.LLMPool——统一并发/速率/熔断
