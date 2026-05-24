@@ -388,6 +388,148 @@ _PHASE_REVIEW_META: dict = {
 }
 
 
+# ═══════════════════════════════════════════════════════
+#  Phase 2 审核:3 候选生成 / 选定 / 丢弃
+# ═══════════════════════════════════════════════════════
+
+@app.route("/api/projects/<project_id>/phase_drafts/<phase_id>", methods=["GET"])
+def api_phase_drafts_list(project_id, phase_id):
+    """列出某 phase 的所有候选 (用于 modal 版本切换 UI)."""
+    project_context.set_project(project_id)
+    s = _load()
+    if not s:
+        return jsonify({"error": "state 未加载"}), 400
+    from core.phase_draft import list_drafts, is_supported
+    drafts = list_drafts(s, phase_id)
+    out = []
+    for d in drafts:
+        out.append({
+            "phase_id":      d.phase_id,
+            "version_index": d.version_index,
+            "payload":       d.payload,
+            "created_at":    d.created_at,
+            "notes":         d.notes,
+        })
+    return jsonify({
+        "phase_id":  phase_id,
+        "supported": is_supported(phase_id),
+        "drafts":    out,
+        "total":     len(out),
+    })
+
+
+@app.route("/api/projects/<project_id>/phase_drafts/<phase_id>/generate", methods=["POST"])
+def api_phase_drafts_generate(project_id, phase_id):
+    """跑 phase 的 regen 函数 count 次,生成 count 个候选 (默认 3).
+
+    Query: count=3 (1-5)
+    Body (可选): {"user_feedback": "..."}  — 用户反馈(本期未塞入 prompt,仅作 notes 记录)
+    """
+    project_context.set_project(project_id)
+    from core.phase_draft import is_supported, generate_phase_drafts
+    if not is_supported(phase_id):
+        return jsonify({
+            "error": f"phase_id={phase_id} 不支持 3 候选生成 (仅支持 PHASE_FIELDS_MAP 内的 phase)"
+        }), 400
+    try:
+        count = int(request.args.get("count", "3"))
+    except (TypeError, ValueError):
+        count = 3
+    count = max(1, min(5, count))   # 安全上限
+    body = request.get_json(silent=True) or {}
+    user_feedback = str(body.get("user_feedback") or "").strip()[:300]
+
+    s = _load()
+    if not s:
+        return jsonify({"error": "state 未加载"}), 400
+
+    # 找对应的 regen 函数 (从 _PHASE_REVIEW_META 拿 regen_action 名 → web/regenerate.py)
+    meta = _PHASE_REVIEW_META.get(phase_id)
+    if not meta or not meta.get("regen_action"):
+        return jsonify({
+            "error": f"phase_id={phase_id} 无 regen_action,无法生成候选"
+        }), 400
+    regen_name = meta["regen_action"]
+    regen_fn = regen_mod.REGEN_ACTIONS.get(regen_name)
+    if not regen_fn:
+        return jsonify({
+            "error": f"regen action '{regen_name}' 不在 REGEN_ACTIONS"
+        }), 404
+
+    # 跑 generate_phase_drafts (内部 backup → regen ×N → restore)
+    notes_prefix = f"用户反馈:{user_feedback}" if user_feedback else ""
+    try:
+        new_drafts = generate_phase_drafts(s, phase_id, regen_fn, count=count, notes_prefix=notes_prefix)
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+
+    # 写盘 (state.phase_drafts 已更新)
+    try:
+        save_state(s)
+    except Exception as e:
+        return jsonify({"error": f"save_state 失败: {type(e).__name__}: {e}"}), 500
+
+    return jsonify({
+        "status":         "ok",
+        "phase_id":       phase_id,
+        "generated":      len(new_drafts),
+        "total_drafts":   len(s.phase_drafts.get(phase_id, [])),
+        "user_feedback":  user_feedback,
+        "feedback_note":  "本期 user_feedback 仅作 notes 记录,未塞入 regen LLM prompt — 见 Phase 2.1",
+    })
+
+
+@app.route("/api/projects/<project_id>/phase_drafts/<phase_id>/select", methods=["POST"])
+def api_phase_drafts_select(project_id, phase_id):
+    """选定某候选 — payload 写回 state,其余候选清空.
+
+    Query: version=N (1-based version_index)
+    """
+    project_context.set_project(project_id)
+    try:
+        version = int(request.args.get("version", "0"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "缺 version 或非数字"}), 400
+    if version <= 0:
+        return jsonify({"error": "version 必须 ≥ 1"}), 400
+
+    s = _load()
+    if not s:
+        return jsonify({"error": "state 未加载"}), 400
+
+    from core.phase_draft import apply_draft
+    ok = apply_draft(s, phase_id, version)
+    if not ok:
+        return jsonify({"error": f"候选 v{version} 未找到"}), 404
+
+    # apply_draft 内部已 save_state + load_state 规范化,这里不重复保存
+    return jsonify({
+        "status":   "ok",
+        "phase_id": phase_id,
+        "version":  version,
+    })
+
+
+@app.route("/api/projects/<project_id>/phase_drafts/<phase_id>/discard", methods=["POST"])
+def api_phase_drafts_discard(project_id, phase_id):
+    """全弃某 phase 的所有候选 (用户决定不采纳).返回清空条数."""
+    project_context.set_project(project_id)
+    s = _load()
+    if not s:
+        return jsonify({"error": "state 未加载"}), 400
+    from core.phase_draft import discard_drafts
+    n = discard_drafts(s, phase_id)
+    try:
+        save_state(s)
+    except Exception as e:
+        return jsonify({"error": f"save_state 失败: {type(e).__name__}: {e}"}), 500
+    return jsonify({
+        "status":     "ok",
+        "phase_id":   phase_id,
+        "discarded":  n,
+    })
+
+
 @app.route("/api/projects/<project_id>/group_review_payload")
 def api_group_review_payload(project_id):
     """审核 modal 用:返回某 group 的所有 phase 元数据(name/section/regen_action).

@@ -559,6 +559,20 @@ class FlavorAdvice:
     reasoning: str = ""          # 给的理由(50 字内,可空)
 
 
+@dataclass
+class PhaseDraft:
+    """Stepwise 审核 modal 用:某 phase 的一个候选版本(LLM 跑 N 次产出多版本).
+
+    payload 存该 phase 改动的字段(从 PHASE_FIELDS_MAP[phase_id] 读出的字段名 → JSON-able 值).
+    用户在 modal 里对比选定后,apply_draft 把 payload 写回 state 顶层字段;其余候选 discard.
+    """
+    phase_id: str                # 如 "1D" / "1F" / "0" 等
+    version_index: int           # 1 / 2 / 3 (在该 phase 的候选列表中的序号)
+    payload: dict                # {field_name: value} — 该候选写回 state 时用
+    created_at: str              # 时间戳
+    notes: str = ""              # 可选备注(如"用户反馈:..."或"LLM 重试 3 次后产出")
+
+
 # ═══════════════════════════════════════════════════════
 #  IV-C. 反转系统（TwistDesigner）—— 层层反转让读者猜不到
 # ═══════════════════════════════════════════════════════
@@ -2470,6 +2484,9 @@ class NovelState:
     flavor_advices: list[FlavorAdvice] = field(default_factory=list)
     # Batch 6:平台 rulebook 缓存(立项时按 target_platform 加载,空=未匹配/无规则)
     platform_rules: str = ""
+    # Phase 2 审核:某 phase 的候选版本暂存 — 用户选定后清空,未选定时持久化
+    # 结构:{phase_id: [PhaseDraft(v1), PhaseDraft(v2), PhaseDraft(v3)]}
+    phase_drafts: dict = field(default_factory=dict)
     rhythm_plans: list[VolumeRhythmPlan] = field(default_factory=list)
 
     # 关系网络

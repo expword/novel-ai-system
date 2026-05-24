@@ -77,6 +77,8 @@ function app() {
       phases: [],          // [{phase_id, name, section, regen_action}]
       activeTab: "",        // 当前选中的 phase_id
       tabData: {},          // { [phase_id]: {loading, data, error, busy} }
+      // Phase 2:候选数据
+      candidates: {},       // { [phase_id]: {loading, drafts:[], supported, activeVersion: 0} }
     },
     // 带反馈重生成的小弹窗
     feedbackModal: {
@@ -634,7 +636,9 @@ function app() {
     async switchReviewTab(phaseId) {
       if (!phaseId) return;
       this.reviewModal.activeTab = phaseId;
-      // 若已加载过则直接显示
+      // 同步顺手拉候选(可能有,可能没有)
+      this.loadCandidates(phaseId).catch(() => {});
+      // 若已加载过 section 数据则直接显示
       const cached = this.reviewModal.tabData[phaseId];
       if (cached && cached.data !== null && !cached.error) return;
       // 拉数据
@@ -757,9 +761,133 @@ function app() {
       }
     },
 
-    openCandidateGeneration() {
-      // Phase 2 待实现:生成 3 候选 + 版本切换 + 选定
-      this.flash = "🎲 生成 3 候选功能:Phase 2 待实现(state.phase_drafts + diff/apply 机制)";
+    // ── Phase 2:3 候选生成 / 切换 / 选定 / 丢弃 ──────────────────
+    async openCandidateGeneration() {
+      const action = this.activeReviewRegenAction();
+      const pid = this.reviewModal.activeTab;
+      if (!action) {
+        this.error = "本项无 regen action,无法生成 3 候选";
+        return;
+      }
+      if (!confirm(`确认生成 3 个候选版本?\n这会调 LLM 3 次(单次约 30s,总耗时 1-3 分钟),不影响当前 state。`)) return;
+      const slot = this.reviewModal.tabData[pid] || { loading: false, data: null, error: "", busy: false };
+      slot.busy = true;
+      this.reviewModal.tabData[pid] = { ...slot };
+      try {
+        const r = await fetch(
+          this._api(`/api/phase_drafts/${encodeURIComponent(pid)}/generate?count=3`),
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+        );
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          this.error = `生成 3 候选失败 HTTP ${r.status}: ${j.error || ""}`;
+          slot.busy = false;
+          this.reviewModal.tabData[pid] = { ...slot };
+          return;
+        }
+        this.flash = `✓ 已生成 ${j.generated || 0} 个候选,共 ${j.total_drafts || 0} 条`;
+        // 加载候选列表
+        await this.loadCandidates(pid);
+        slot.busy = false;
+        this.reviewModal.tabData[pid] = { ...slot };
+      } catch (e) {
+        this.error = `生成 3 候选网络异常:${e.message}`;
+        slot.busy = false;
+        this.reviewModal.tabData[pid] = { ...slot };
+      }
+    },
+
+    async loadCandidates(phaseId) {
+      if (!phaseId) return;
+      const cand = this.reviewModal.candidates[phaseId]
+        || { loading: false, drafts: [], supported: false, activeVersion: 0 };
+      cand.loading = true;
+      this.reviewModal.candidates[phaseId] = { ...cand };
+      try {
+        const r = await fetch(this._api(`/api/phase_drafts/${encodeURIComponent(phaseId)}`));
+        if (!r.ok) {
+          cand.loading = false;
+          this.reviewModal.candidates[phaseId] = { ...cand };
+          return;
+        }
+        const j = await r.json();
+        cand.loading = false;
+        cand.drafts = j.drafts || [];
+        cand.supported = !!j.supported;
+        if (cand.drafts.length && !cand.activeVersion) {
+          cand.activeVersion = cand.drafts[0].version_index;
+        }
+        this.reviewModal.candidates[phaseId] = { ...cand };
+      } catch (e) {
+        cand.loading = false;
+        this.reviewModal.candidates[phaseId] = { ...cand };
+      }
+    },
+
+    activeCandidates() {
+      const pid = this.reviewModal.activeTab;
+      return this.reviewModal.candidates[pid] || null;
+    },
+
+    activeCandidatePayload() {
+      const cand = this.activeCandidates();
+      if (!cand || !cand.drafts.length) return null;
+      const target = cand.drafts.find(d => d.version_index === cand.activeVersion);
+      return target ? target.payload : null;
+    },
+
+    setActiveVersion(version) {
+      const pid = this.reviewModal.activeTab;
+      const cand = this.reviewModal.candidates[pid];
+      if (!cand) return;
+      cand.activeVersion = version;
+      this.reviewModal.candidates[pid] = { ...cand };
+    },
+
+    async selectCandidate() {
+      const pid = this.reviewModal.activeTab;
+      const cand = this.activeCandidates();
+      if (!pid || !cand || !cand.activeVersion) return;
+      const v = cand.activeVersion;
+      if (!confirm(`确认采用候选 v${v}?\n会把这版写回 state,其他候选丢弃。`)) return;
+      try {
+        const r = await fetch(
+          this._api(`/api/phase_drafts/${encodeURIComponent(pid)}/select?version=${v}`),
+          { method: "POST" }
+        );
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          this.error = `选定失败 HTTP ${r.status}: ${j.error || ""}`;
+          return;
+        }
+        this.flash = `✓ 已采用 v${v},其他候选已丢弃`;
+        // 清候选 + 重拉本 phase 数据
+        this.reviewModal.candidates[pid] = { loading: false, drafts: [], supported: true, activeVersion: 0 };
+        this.reviewModal.tabData[pid] = { loading: false, data: null, error: "", busy: false };
+        await this.switchReviewTab(pid);
+      } catch (e) {
+        this.error = `选定网络异常:${e.message}`;
+      }
+    },
+
+    async discardCandidates() {
+      const pid = this.reviewModal.activeTab;
+      if (!pid) return;
+      if (!confirm("确认丢弃所有候选?")) return;
+      try {
+        const r = await fetch(
+          this._api(`/api/phase_drafts/${encodeURIComponent(pid)}/discard`),
+          { method: "POST" }
+        );
+        if (!r.ok) {
+          this.error = `丢弃失败 HTTP ${r.status}`;
+          return;
+        }
+        this.flash = "✓ 已丢弃所有候选";
+        this.reviewModal.candidates[pid] = { loading: false, drafts: [], supported: true, activeVersion: 0 };
+      } catch (e) {
+        this.error = `丢弃网络异常:${e.message}`;
+      }
     },
 
     openPhaseSection() {

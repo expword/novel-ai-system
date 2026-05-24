@@ -2244,6 +2244,44 @@ body.dark .ps-status-rejected { background: #475569; color: #cbd5e1; }
   margin-top: 12px;
 }
 
+/* Phase 2:候选版本对比 */
+.rm-candidates {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: rgba(74, 222, 128, 0.06);
+  border: 1px dashed rgba(74, 222, 128, 0.4);
+  border-radius: 6px;
+}
+.rm-candidates-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.rm-candidates-head strong { color: var(--accent); margin-right: 4px; }
+.rm-version-chip {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 4px 12px;
+  border-radius: 14px;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: all 0.12s;
+}
+.rm-version-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.rm-version-chip.rm-version-chip-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0f1116;
+}
+.rm-candidates-spacer { flex: 1; }
+
 /* 响应式:宽度 < 900 时 tab 在上,内容在下 */
 @media (max-width: 900px) {
   .review-modal { height: 96vh; width: 100vw; border-radius: 0; }

@@ -34,7 +34,7 @@ from persistence.state import (
     CharacterArc, ArcTransition,
     RedHerring, ConflictLadder, ConflictEntry, EmotionCurve, EmotionNote,
     SetupEntry, SetupKind,
-    SimulatedComment, FlavorAdvice,
+    SimulatedComment, FlavorAdvice, PhaseDraft,
     TwistLayer, TwistChain, TwistSystem,
     ChapterTypeAssignment, VolumeChapterTypeDistribution,
     ChapterPacingStats, CharacterStateSnapshot, WorldEvent,
@@ -291,6 +291,17 @@ def _load_flavor_advice(d: dict) -> FlavorAdvice:
         target_range=d.get("target_range", ""),
         advice=list(d.get("advice", []) or []),
         reasoning=d.get("reasoning", ""),
+    )
+
+
+def _load_phase_draft(d: dict) -> PhaseDraft:
+    """Phase 2 审核候选反序列化。"""
+    return PhaseDraft(
+        phase_id=d.get("phase_id", ""),
+        version_index=int(d.get("version_index", 1)),
+        payload=d.get("payload") if isinstance(d.get("payload"), dict) else {},
+        created_at=d.get("created_at", ""),
+        notes=d.get("notes", ""),
     )
 
 
@@ -1158,6 +1169,15 @@ def _load_state(d: dict) -> NovelState:
     state.setup_ledger = [_load_setup_entry(e) for e in d.get("setup_ledger", [])]
     state.flavor_advices = [_load_flavor_advice(a) for a in d.get("flavor_advices", []) if isinstance(a, dict)]
     state.platform_rules = d.get("platform_rules", "") or ""
+    # Phase 2 审核候选(向后兼容:旧 state.json 无此字段 → 空 dict)
+    _pd_raw = d.get("phase_drafts") or {}
+    if isinstance(_pd_raw, dict):
+        state.phase_drafts = {
+            pid: [_load_phase_draft(x) for x in (lst or []) if isinstance(x, dict)]
+            for pid, lst in _pd_raw.items()
+        }
+    else:
+        state.phase_drafts = {}
     state.twist_system = _load_twist_system(d.get("twist_system", {}))
     state.chapter_type_plans = [_load_volume_ctp(p) for p in d.get("chapter_type_plans", [])]
     state.character_state_history = {
