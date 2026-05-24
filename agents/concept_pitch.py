@@ -100,7 +100,10 @@ def _design_concept_pitch(state: NovelState) -> None:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
-    prompt = f"""{intent_header}为以下小说做立项——如果上面有作者原始意图，立项必须严格贴合那段原话，
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}{intent_header}为以下小说做立项——如果上面有作者原始意图，立项必须严格贴合那段原话，
 下面的【书名/题材/主题】只是系统元数据，**作者意图和它冲突时以作者意图为准**。
 
 【书名】《{state.title}》

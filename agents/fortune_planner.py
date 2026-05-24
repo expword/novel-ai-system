@@ -126,7 +126,10 @@ def _plan_volume_fortunes(state: NovelState, vol, prot_name: str, realm_plan: di
                     )
     ability_brief = "\n".join(ability_awakenings) or "（本卷无特殊能力新觉醒）"
 
-    prompt = f"""
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为主角【{prot_name}】在第{vol.index}卷《{vol.title}》规划【{fortune_term}】——3-5 个即可。
 
 【体系类型】{sys_type}

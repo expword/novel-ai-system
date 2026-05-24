@@ -61,10 +61,22 @@ STAGE_TYPES = [
 
 
 def design_volume_stages(state: NovelState, volume_index: int) -> None:
-    """为指定卷设计叙事舞台，写入 state.story_stages。"""
+    """为指定卷设计叙事舞台，写入 state.story_stages。
+
+    **幂等**：入口先清除本 volume 的旧 stage——避免 phase 重跑/中断恢复时
+    重复 append（历史 bug：用户《被豆包带飞》第 1 卷有 10 个 stage，
+    每个 stage_id 出现 2 次，因为本函数被调用了两次而没有去重）。
+    """
     vol = state.get_volume(volume_index)
     if not vol:
         return
+
+    # 清除本 volume 的旧 stage——幂等保证（跟 web/regenerate.regen_stages 行为一致）
+    before = len(state.story_stages)
+    state.story_stages = [s for s in state.story_stages if s.volume != volume_index]
+    cleared = before - len(state.story_stages)
+    if cleared > 0:
+        print(f"  ℹ design_volume_stages 幂等清理：移除第{volume_index}卷旧 stage {cleared} 个")
 
     protagonist = next((c for c in state.characters if c.role.value == "主角"), None)
     prot_name = protagonist.name if protagonist else "主角"
@@ -95,8 +107,61 @@ def design_volume_stages(state: NovelState, volume_index: int) -> None:
 
     world_ctx = format_world_context_brief(state)
 
+    # ═══ 主角境界硬约束（防 stage 节奏狂飙）═══
+    # 历史 bug：stage_architect 不读 protagonist_realm_plan → 第 1 卷秀才就"清洗豪强"。
+    # 修：完全从 state 动态构造境界对照表（power_description / breakthrough_condition 等
+    # 字段都是 realm_designer 已经填好的）。**不写死任何题材示例**（秀才/知县 是
+    # 修真+封建特定术语，不适用其他题材）——按 [[feedback_generic_prompts]] 完全动态化。
+    realm_constraint_block = ""
+    if state.power_system:
+        realm_plan = state.power_system.protagonist_realm_plan or {}
+        realms_list = state.power_system.realms or []
+        if realm_plan or realms_list:
+            current_realm = realm_plan.get(volume_index, "")
+            prev_arcs = []
+            for v in range(1, volume_index):
+                r = realm_plan.get(v, "")
+                if r:
+                    prev_arcs.append(f"    V{v} 末：{r}")
+            next_realm = realm_plan.get(volume_index + 1, "")
+            lines = ["\n═══ ⚠ 主角境界硬约束（stage 设计不可突破本卷上限）═══"]
+            if current_realm:
+                lines.append(f"  · **本卷主角境界**：{current_realm}")
+            if prev_arcs:
+                lines.append("  · 前几卷累积成长：")
+                lines.extend(prev_arcs)
+            if next_realm:
+                lines.append(f"  · 下一卷上限：V{volume_index+1} 末 = {next_realm}")
+
+            # 从 state.power_system.realms 动态构造完整境界对照表——
+            # 让 LLM 看到"每级具体能做什么 + 突破前提"，不靠任何写死的题材示例
+            if realms_list:
+                lines.append("\n  · 本书完整境界阶梯（按级别从低到高 / 字段来自 power_system.realms）：")
+                for r in realms_list[:10]:
+                    bits = [f"      级 {r.index} {r.name}"]
+                    if r.power_description:
+                        bits.append(f"能做：{r.power_description[:120]}")
+                    if r.breakthrough_condition:
+                        bits.append(f"晋级前提：{r.breakthrough_condition[:80]}")
+                    if r.combat_capability:
+                        bits.append(f"战力：{r.combat_capability[:60]}")
+                    if r.rarity:
+                        bits.append(f"稀有度：{r.rarity[:40]}")
+                    lines.append(" | ".join(bits))
+
+            lines.append(
+                "\n  ⚠ 铁律：stage 里主角能做的事必须 ≤ 上方对照表里**本卷境界对应的「能做」字段**——\n"
+                "    每个 stage 的 purpose / key_activities 写完后回头检查：\n"
+                "      · 这一动作在上方对照表里对应哪一级？\n"
+                "      · 这一级跟本卷境界匹配吗？高于本卷 = 违规\n"
+                "    本卷境界写得很清楚——直接对照上面的对照表判断，不要靠「网文一般套路」\n"
+                "    凭感觉给主角加戏。stage 写的越是「重大动作」，越要回头查境界对照。"
+            )
+            realm_constraint_block = "\n".join(lines)
+
     # 主角金手指/能力的具体名字——禁止 LLM 用 "AI/系统/算法" 泛词
     abilities_block = ""
+    ai_constraint_block = ""
     if state.power_system and state.power_system.special_abilities:
         proto_signs = [
             ab for ab in state.power_system.special_abilities
@@ -115,12 +180,58 @@ def design_volume_stages(state: NovelState, volume_index: int) -> None:
                 f"必须用具体名字（{' / '.join(names_only)}）。错 ✗ 'AI 计算' / 对 ✓ '《{names_only[0]}》计算'。"
             )
 
-    prompt = f"""
+            # ═══ asset 功能边界硬约束（完全从 asset 自身字段动态构造）═══
+            # 历史 bug：stage_architect 只读 description 一行简介，
+            #   functional_limits / usage_cost / ceiling_at_intro / signature_use_modes
+            #   等关键字段藏在长字符串里 LLM 一眼看不清。
+            # 修：每个 asset 独立列字段——LLM 看到结构化"边界 / 代价 / 上限 / 典型用法"
+            #   清单。铁律段**不写死任何题材示例**（不假设"古代/现代"、"AI 训练数据"
+            #   等隐含背景）——按 [[feedback_generic_prompts]] 完全靠 asset 自身字段。
+            # 对所有 intent_declared asset 生效（不只是绑真 LLM 的——设定型 asset
+            # 也有功能边界，同样要约束）
+            declared_assets = [ab for ab in proto_signs
+                               if ab.description.startswith("[intent_declared]")]
+            if declared_assets:
+                ai_lines = ["═══ ⚠ asset 使用边界硬约束（按各 asset 自身字段判断 stage 是否越界）═══"]
+                for ab in declared_assets:
+                    is_real_ai = bool((ab.external_llm_profile or "").strip())
+                    ai_tag = f"绑真 LLM = {ab.external_llm_profile}" if is_real_ai else "设定型"
+                    ai_lines.append(f"\n  ◆ asset 《{ab.name}》（{ai_tag}）")
+                    # description 用 ' / ' 分隔多段——逐段独立列出
+                    for part in ab.description.split(" / "):
+                        p = part.strip()
+                        if p:
+                            ai_lines.append(f"      · {p}")
+                ai_lines.extend([
+                    "",
+                    "  ⚠ 铁律（基于上面每个 asset 自身字段判断，**不要按一般套路想**）：",
+                    "      ✗ stage 里让 asset 做的事，超出该 asset 自身「功能限制」字段列出的范围 = 违规",
+                    "      ✗ stage 里用 asset 但漏写对应「使用代价」字段描述的代价 = 金手指万能化 = 违规",
+                    "      ✗ stage 里让 asset 在本卷做出超出「初登场上限」字段的事 = 节奏狂飙 = 违规",
+                    "      ✗ stage 用「主角直接靠 asset 搞定 X」式一步到位 = 漏了主角的戏 = 违规",
+                    "",
+                    "  ⚠ 正确套路（参照上面每个 asset 自身的「典型用法」字段）：",
+                    "      · asset 提供的内容类型必须出现在 asset 自身的能力范围内",
+                    "      · stage 描述要体现两步：①asset 给什么 ②主角如何用本书 canon 里已有的信息落地",
+                    "      · 只写「主角通过 asset 分析 X」是不完整的——X 必须是该 asset 能力范围内的类型",
+                    "",
+                    "  ⚠ 使用代价必须显式体现：每个用到 asset 的 stage，描述里**必须**暗示该 asset 自身",
+                    "      「使用代价」字段里说的代价（具体是什么由 asset 字段决定——疲惫/失忆/反噬/限次都可能）",
+                ])
+                ai_constraint_block = "\n".join(ai_lines)
+
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为第{volume_index}卷《{vol.title}》{vol_role_tag}设计叙事舞台（大情节）和子场景（小情节）。
 
 {world_ctx}
 
+{realm_constraint_block}
 {abilities_block}
+
+{ai_constraint_block}
 
 ═══ 本卷上下文（所处分形层级） ═══
 本卷在整本书起承转合中的角色：{vol.structure_role or '待定'}

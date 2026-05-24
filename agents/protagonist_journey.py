@@ -70,7 +70,10 @@ def _step1_overall_arc(state: NovelState) -> None:
             for b in key_bonds
         )
 
-    prompt = f"""
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为《{state.title}》主角【{protagonist.name}】设计完整的人生弧线。
 
 主角基础信息：

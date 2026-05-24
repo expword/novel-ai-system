@@ -24,6 +24,7 @@ from persistence.state import (
     NovelState, TwistSystem, TwistChain, TwistLayer,
 )
 from agents.concept_pitch import format_world_context_brief
+from agents.plot_enhancer import format_adopted_supplements
 
 
 SYSTEM = """你是反转设计师（Twist Designer）——专门设计"读者永远猜不到下一步"的多层反转。
@@ -192,10 +193,23 @@ def _design_chain_seeds(state: NovelState) -> dict:
         f"第{v.index}卷《{v.title}》：{v.theme}" for v in state.volumes
     ) if state.volumes else ""
 
-    prompt = f"""
+    supplements_block = format_adopted_supplements(state.creative_intent)
+    if supplements_block:
+        supplements_block = (
+            supplements_block
+            + "\n  ⚠ 含「关系反转伏笔」「设定爆点」类建议 → 必须转成本批次的具体反转链"
+            "（每条采纳建议都要在 layers 里被某一层揭露）"
+        )
+
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为《{state.title}》（题材：{state.genre}）设计【层层反转】的骨架。
 
 {ctx}
+
+{supplements_block}
 
 全书主题：{state.theme}
 故事前提：{getattr(mo, 'story_premise', '')[:160]}

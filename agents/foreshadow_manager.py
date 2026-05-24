@@ -5,6 +5,7 @@ ForeshadowManagerAgent — 专项管理伏笔的规划/追踪/植入/兑现。
 import json
 from utils.json_utils import repair_json, safe_parse, pick_list, request_json
 from agents.concept_pitch import format_concept_brief
+from agents.plot_enhancer import format_adopted_supplements
 from llm_layer.llm import system_user
 from persistence.state import NovelState, ForeshadowItem, ForeshadowImportance, RedHerring
 from config import NUM_VOLUMES
@@ -123,6 +124,13 @@ def _plan_foreshadow_batch(state: NovelState, importance_label: str,
     total_chapters = sum(v.total_chapters for v in state.volumes)
 
     concept_block = format_concept_brief(state)
+    supplements_block = format_adopted_supplements(state.creative_intent)
+    if supplements_block:
+        supplements_block = (
+            supplements_block
+            + "\n  ⚠ 含「关系反转伏笔」「悬念钩子」类的建议必须转成本批次的具体"
+            "foreshadow_item（plant/payoff 都要落地）"
+        )
 
     twist_block = ""
     if required_clues:
@@ -140,10 +148,15 @@ def _plan_foreshadow_batch(state: NovelState, importance_label: str,
 - 这些 clue 对应的伏笔的 planned_resolve_chapter 必须早于或等于反转层的揭露锚点章
 - 余下名额（共 {high} 个上限）再生成与反转无关的独立主线伏笔
 """
-    prompt = f"""
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为《{state.title}》规划【{importance_label}】——{low}-{high} 个。
 
 {concept_block}
+
+{supplements_block}
 
 本批定义：{desc}
 跨度要求：{span_hint}

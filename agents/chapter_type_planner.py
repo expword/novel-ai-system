@@ -23,10 +23,21 @@ SYSTEM = """你是网文章节类型节奏师。
 
 
 def plan_chapter_types(state: NovelState, volume_index: int) -> None:
-    """为单卷生成章节类型规划——每章分派一个类型，并说明配比逻辑。"""
+    """为单卷生成章节类型规划——每章分派一个类型，并说明配比逻辑。
+
+    **幂等**：入口先清除本卷的旧 plan，避免 phase 重跑/中断恢复时重复 append。
+    """
     vol = state.get_volume(volume_index)
     if not vol:
         return
+
+    # 清除本卷旧 plan（同 stage_architect 的幂等修复）
+    before = len(state.chapter_type_plans)
+    state.chapter_type_plans = [p for p in state.chapter_type_plans
+                                  if p.volume != volume_index]
+    cleared = before - len(state.chapter_type_plans)
+    if cleared > 0:
+        print(f"  ℹ plan_chapter_types 幂等清理：移除第{volume_index}卷旧 plan {cleared} 个")
 
     concept = format_concept_brief(state)
     emotion_note = state.emotion_curve.get(volume_index) if state.emotion_curve else None
@@ -52,7 +63,10 @@ def plan_chapter_types(state: NovelState, volume_index: int) -> None:
         for sp in vol_sps
     ) or "（本卷无已规划爽点）"
 
-    prompt = f"""
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为第 {volume_index} 卷《{vol.title}》规划章节类型分布。
 
 {concept}

@@ -206,7 +206,10 @@ def design_realm_system(state: NovelState) -> None:
     if intent.analyzed and intent.tone_summary:
         intent_block = f"\n创作意图整体气质：{intent.tone_summary}\n"
 
-    prompt = f"""
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为《{state.title}》设计"力量/成长体系"。
 
 题材：{state.genre}
@@ -375,12 +378,16 @@ special_mechanics 按流派填（这个比 realms 更能体现流派特征）：
         )
         for m in data.get("special_mechanics", []) if m.get("name")
     ]
+    preserved_special_abilities = []
+    if state.power_system and state.power_system.special_abilities:
+        # Phase 1A rebuilds the ladder, but user-declared assets are registered earlier.
+        preserved_special_abilities = list(state.power_system.special_abilities)
 
     state.power_system = PowerSystem(
         system_name=data.get("system_name", "未命名体系"),
         system_description=data.get("system_description", ""),
         realms=realms,
-        special_abilities=[],  # 特殊能力在 Phase 2C 单独设计
+        special_abilities=preserved_special_abilities,
         cultivation_resources=data.get("cultivation_resources", []),
         protagonist_realm_plan={int(k): v for k, v in data.get("protagonist_realm_plan", {}).items()},
         system_type=data.get("system_type", "realms"),
@@ -477,14 +484,31 @@ def design_power_scaling(state: NovelState) -> None:
 def design_special_abilities(state: NovelState) -> None:
     """
     Phase 2C：人物设计完成后，单独设计特殊能力（3-5 个）。
-    仅对 realms / skill_tiers 类型有意义；社会/人生/无体系 跳过。
+
+    早退规则：
+      · ps 不存在 / 主角不存在 → 跳过
+      · 已有 intent_declared 标记的 asset（user 声明过）→ **保留不动**，跳过补充
+        （历史 bug：之前 progression_arc 题材直接全跳过，导致用户 intent 里
+         写明的"豆包"没有任何机会被登记。intent_asset_extractor 已在
+         Phase -1.5 抽过用户声明，这里只是不要冲突覆盖）
+      · system_type 不是 realms / skill_tiers + 无 user 声明 → 跳过
     """
     ps = state.power_system
     if not ps:
         print("  ⚠ 力量体系未设计，跳过特殊能力")
         return
+
+    # intent_asset_extractor 在 Phase -1.5 已经处理了用户声明的 asset；
+    # 此处看到 [intent_declared] 标记就直接尊重，不再凭 system_type 推翻
+    intent_declared = [ab for ab in (ps.special_abilities or [])
+                        if ab.description.startswith("[intent_declared]")]
+    if intent_declared:
+        print(f"  ✓ intent_asset_extractor 已登记 {len(intent_declared)} 个 user 声明的 asset，"
+              "跳过 realm_designer 补充（保留 user 声明）")
+        return
+
     if ps.system_type not in ("realms", "skill_tiers"):
-        print(f"  ⚠ 体系类型 [{ps.system_type}] 不需要特殊能力——跳过")
+        print(f"  ⚠ 体系类型 [{ps.system_type}] 不需要特殊能力 + intent 未声明——跳过")
         return
 
     protagonist = next((c for c in state.characters if c.role.value == "主角"), None)

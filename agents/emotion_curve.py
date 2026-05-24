@@ -42,7 +42,10 @@ def design_emotion_curve(state: NovelState) -> None:
     # 冲突阶梯可以参考——冲突 tier 高的卷情绪容易更重
     conflict_brief = state.conflict_ladder.brief() if state.conflict_ladder else ""
 
-    prompt = f"""
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为《{state.title}》规划【情绪曲线】——每卷一条。
 
 {concept}

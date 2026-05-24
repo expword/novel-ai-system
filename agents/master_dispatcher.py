@@ -187,7 +187,10 @@ def _dispatch_overview(state: NovelState, context: str) -> dict:
     Step A：生成全书整体概念。输出量小（5 字段，总 ~300-400 字），几乎不会被截断。
     产出：story_premise / central_conflict / thematic_core / world_seed / tone_anchors
     """
-    prompt = f"""{context}
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}{context}
 
 ═══ 任务：生成全书总览（仅 5 个字段，不要超出这些）═══
 

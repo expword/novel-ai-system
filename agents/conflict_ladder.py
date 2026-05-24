@@ -28,7 +28,10 @@ def design_conflict_ladder(state: NovelState) -> None:
         for v in state.volumes
     )
 
-    prompt = f"""
+    # Phase 2.2:thread-local user_feedback 注入
+    from utils.feedback_helper import get_user_feedback_prefix
+    feedback_prefix = get_user_feedback_prefix()
+    prompt = f"""{feedback_prefix}
 为《{state.title}》规划【冲突阶梯】——每卷一条。
 
 {concept}

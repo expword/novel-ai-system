@@ -14,6 +14,7 @@ from utils.json_utils import request_json
 from persistence.state import NovelState, Character, CharacterRole
 from utils.concurrency import parallel_map
 from config import PARALLEL_WORKERS
+from typing import Optional, Tuple
 
 
 SYSTEM = """你是人物雕刻师——把人物从"档案"写成"活生生的人"。
@@ -73,7 +74,7 @@ def refine_major_characters(state: NovelState) -> None:
 
     print(f"  为 {len(pending)} 个核心角色并发深化（每人一次 LLM 调用）...")
 
-    def refine_one(char: Character) -> tuple[Character, dict] | None:
+    def refine_one(char: Character) -> Optional[Tuple[Character, dict]]:
         """单个角色的 LLM 调用——返回 (char, data) 或 None。线程安全：只读 state，不写。"""
         is_protagonist = (char.role == CharacterRole.PROTAGONIST)
         char_sheet = (
@@ -97,7 +98,10 @@ def refine_major_characters(state: NovelState) -> None:
         elif is_protagonist:
             contrast_block = "\n这是主角本人，contrast_with_protagonist 填 '—'。"
 
-        prompt = f"""为以下人物补上细腻刻画的几样东西。
+        # Phase 2.2:thread-local user_feedback 注入
+        from utils.feedback_helper import get_user_feedback_prefix
+        feedback_prefix = get_user_feedback_prefix()
+        prompt = f"""{feedback_prefix}为以下人物补上细腻刻画的几样东西。
 
 【已有档案】
 {char_sheet}

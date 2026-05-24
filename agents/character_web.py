@@ -125,7 +125,10 @@ def design_relationship_web(state: NovelState) -> None:
     ]
 
     def _gen_batch(batch: dict) -> list[dict]:
-        prompt = f"""{common_context}
+        # Phase 2.2:thread-local user_feedback 注入
+        from utils.feedback_helper import get_user_feedback_prefix
+        feedback_prefix = get_user_feedback_prefix()
+        prompt = f"""{feedback_prefix}{common_context}
 
 ═══ 本批次：【{batch['label']}】 ═══
 {batch['focus']}
