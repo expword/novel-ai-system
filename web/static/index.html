@@ -1026,6 +1026,10 @@
           <a :class="{'active': current==='world_events', 'running': runningSidebarKey()==='world_events'}" @click.prevent="load('world_events')" href="#">世界事件</a>
           <a :class="{'active': current==='approvals', 'running': runningSidebarKey()==='approvals'}" @click.prevent="loadApprovals()" href="#">HITL 审批</a>
           <a :class="{'active': current==='prompts', 'running': runningSidebarKey()==='prompts'}" @click.prevent="openPrompts()" href="#">📝 提示词管理</a>
+          <!-- Batch 2/6 新面板 -->
+          <a :class="{'active': current==='setup_ledger'}" @click.prevent="load('setup_ledger')" href="#">📒 setup 账本</a>
+          <a :class="{'active': current==='flavor_advices'}" @click.prevent="load('flavor_advices')" href="#">🧂 调味建议</a>
+          <a :class="{'active': current==='platform_rules'}" @click.prevent="load('platform_rules')" href="#">📚 平台规则</a>
         </div>
       </div>
       <!-- 📋 状态审计（放在侧栏最末）──────────────── -->
@@ -2843,6 +2847,151 @@
             <div class="card" x-show="!stateAudit">
               <p class="dim">审计未加载。点击 🔄 刷新审计。</p>
             </div>
+          </div>
+        </template>
+
+        <!-- Batch 2: setup_ledger 全局账本 -->
+        <template x-if="current==='setup_ledger'">
+          <div class="card">
+            <p class="dim">
+              📒 <b>setup 账本</b> —— 章后扫稿提取的"被嘲讽 / 被夺 / 被拒 / 失败 / 立誓"事件,
+              触发爽点章前 writer 会被强制引用其中具体台词/场景作为回响锚点。
+            </p>
+            <template x-if="data && data.total === 0">
+              <p class="dim" style="padding:1em;">还没有记录。需要先写几章触发 LLM 扫稿。</p>
+            </template>
+            <template x-if="data && data.total > 0">
+              <div>
+                <div class="audit-summary-bar" style="padding:0.5em 1em;background:#f4f4f8;margin-bottom:1em;">
+                  <strong>总数:</strong> <span x-text="data.total"></span> 条
+                  ·
+                  <strong>按状态:</strong>
+                  pending=<span x-text="(data.by_status&&data.by_status.pending)||0"></span>
+                  paid=<span x-text="(data.by_status&&data.by_status.paid)||0"></span>
+                  partial=<span x-text="(data.by_status&&data.by_status.partial)||0"></span>
+                  ·
+                  <strong>按类型:</strong>
+                  <template x-for="(n,k) in (data.by_kind||{})" :key="k">
+                    <span style="margin-right:0.6em" x-text="k+'='+n"></span>
+                  </template>
+                </div>
+                <table class="tbl">
+                  <thead><tr>
+                    <th>ID</th><th>章</th><th>类型</th><th>主体</th><th>对手</th>
+                    <th>台词 / 场景</th><th>状态</th><th>兑现章</th>
+                  </tr></thead>
+                  <tbody>
+                    <template x-for="e in (data.entries||[])" :key="e.entry_id">
+                      <tr>
+                        <td><small x-text="e.entry_id"></small></td>
+                        <td x-text="e.chapter"></td>
+                        <td><span class="pill" x-text="e.kind"></span></td>
+                        <td x-text="e.actor"></td>
+                        <td x-text="e.counterpart"></td>
+                        <td>
+                          <small x-show="e.quote"
+                                 :title="e.quote"
+                                 x-text="'「' + (e.quote||'').slice(0,40) + (e.quote && e.quote.length>40?'…':'') + '」'"></small>
+                          <small class="dim" x-show="!e.quote" x-text="(e.scene_summary||'').slice(0,60)"></small>
+                        </td>
+                        <td>
+                          <span class="pill"
+                                :class="{
+                                  'pill-pending': e.payoff_status === 'pending',
+                                  'pill-ok': e.payoff_status === 'paid'
+                                }"
+                                x-text="e.payoff_status"></span>
+                        </td>
+                        <td>
+                          <small x-show="e.callback_chapter > 0">
+                            第 <span x-text="e.callback_chapter"></span> 章
+                            <template x-if="e.callback_quote">
+                              <span :title="e.callback_quote">💬</span>
+                            </template>
+                          </small>
+                          <small class="dim" x-show="e.callback_chapter <= 0">—</small>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Batch 6: 调味建议 -->
+        <template x-if="current==='flavor_advices'">
+          <div class="card">
+            <p class="dim">
+              🧂 <b>调味建议</b> —— 每 3 章 LLM 扫一遍最近章节,产出"下章应当加什么调味料"。
+              chapter_planner 会自动注入最近一条建议,可采纳 / 部分 / 忽略。仅保留最近 5 条。
+            </p>
+            <template x-if="!data || !data.advices || !data.advices.length">
+              <p class="dim" style="padding:1em;">还没有调味建议。系统在写完第 3 章后开始生成。</p>
+            </template>
+            <template x-if="data && data.advices && data.advices.length">
+              <div>
+                <template x-for="(a, idx) in data.advices" :key="idx">
+                  <div class="card" style="margin-bottom:1em;background:#fafaf2">
+                    <div style="display:flex;gap:1em;align-items:baseline">
+                      <strong>📍 第 <span x-text="a.generated_at_chapter"></span> 章生成</strong>
+                      <span class="dim">作用范围:<span x-text="a.target_range"></span></span>
+                    </div>
+                    <ul style="margin:0.4em 0 0.4em 1.5em">
+                      <template x-for="(line, i) in (a.advice||[])" :key="i">
+                        <li x-text="line"></li>
+                      </template>
+                    </ul>
+                    <small class="dim" x-show="a.reasoning">
+                      依据: <span x-text="a.reasoning"></span>
+                    </small>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Batch 6: 平台 rulebook -->
+        <template x-if="current==='platform_rules'">
+          <div class="card">
+            <p class="dim">
+              📚 <b>平台规则</b> —— 立项时按 <code>concept_pitch.target_platform</code> 自动加载,
+              writer / critic / chapter_planner 的 prompt 末尾会注入这份规则,确保写作贴合平台读者偏好。
+            </p>
+            <template x-if="data">
+              <div>
+                <div style="padding:0.5em 1em;background:#f4f4f8;margin-bottom:1em">
+                  <strong>当前平台:</strong>
+                  <span x-text="data.platform || '(未指定)'"></span>
+                  <template x-if="data.resolved_base">
+                    <span class="dim">(归一为 <code x-text="data.resolved_base"></code>)</span>
+                  </template>
+                  <template x-if="!data.has_rules">
+                    <span class="pill pill-pending" style="margin-left:0.5em">未加载</span>
+                  </template>
+                  <template x-if="data.has_rules">
+                    <span class="pill pill-ok" style="margin-left:0.5em">已加载</span>
+                  </template>
+                </div>
+                <div class="dim" style="margin-bottom:0.4em">
+                  支持平台:
+                  <template x-for="p in (data.supported||[])" :key="p">
+                    <code style="margin-right:0.4em" x-text="p"></code>
+                  </template>
+                </div>
+                <template x-if="data.has_rules">
+                  <pre style="background:#fff;padding:1em;border:1px solid #ddd;white-space:pre-wrap;font-size:0.9em" x-text="data.rules"></pre>
+                </template>
+                <template x-if="!data.has_rules">
+                  <p class="dim" style="padding:1em">
+                    未匹配到 platform rulebook。检查 <code>concept_pitch.target_platform</code> 是否在支持列表中,
+                    或在 <code>data/platform_rulebooks/&lt;name&gt;.md</code> 添加自定义规则。
+                  </p>
+                </template>
+              </div>
+            </template>
           </div>
         </template>
 

@@ -582,6 +582,8 @@ def _load_chapter_summary(d: dict) -> ChapterSummary:
             _load_simulated_comment(c)
             for c in d.get("simulated_comments", []) if isinstance(c, dict)
         ],
+        # P2:critic 最后一轮快照(dict,无需自定义反序列化)
+        critic_review=d.get("critic_review") if isinstance(d.get("critic_review"), dict) else {},
     )
 
 

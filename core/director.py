@@ -2113,6 +2113,25 @@ class DirectorAgent:
                 summary.closing_hook_type = hook_spec.type.value
         except Exception:
             pass
+        # P2:把 critic 最后一轮 review 快照写到 summary(UI 可视化用)
+        try:
+            _last = getattr(critic_result, "last_audit", None)
+            if isinstance(_last, dict):
+                # 只存 UI 关心的字段,避免 state.json 膨胀
+                summary.critic_review = {
+                    "score":             _last.get("score", 0),
+                    "passed":            _last.get("passed", False),
+                    "dim_scores":        _last.get("dim_scores", {}) or {},
+                    "sp_check":          _last.get("sp_check", ""),
+                    "fw_check":          _last.get("fw_check", ""),
+                    "structure_check":   _last.get("structure_check", ""),
+                    "protagonist_check": _last.get("protagonist_check", ""),
+                    "highlights":        list(_last.get("highlights") or [])[:3],
+                    "issues":            list(_last.get("issues") or [])[:3],
+                    "feedback":          (_last.get("feedback") or "")[:300],
+                }
+        except Exception:
+            pass
         print(f"  ✓ [{summary.tension.value}] {summary.summary[:55]}...")
 
         # 状态集中回写（快照/关系/伏笔激活/世界事件）

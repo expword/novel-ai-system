@@ -265,6 +265,9 @@ function app() {
         approvals:    "⚙ 元系统 · HITL 审批",
         prompts:      "⚙ 元系统 · 📝 提示词管理",
         module_flow:  "⚙ 元系统 · 模块流程图",
+        setup_ledger:   "⚙ 元系统 · 📒 setup 账本",
+        flavor_advices: "⚙ 元系统 · 🧂 调味建议",
+        platform_rules: "⚙ 元系统 · 📚 平台规则",
       };
       return titles[this.current] || (this.current ? this.current : "选择左侧模块开始");
     },
@@ -2106,6 +2109,21 @@ function app() {
       // 进入 power_system 面板时自动拉一次 user_models（能力面板的"绑外部 LLM"下拉用）
       if (section === "power_system" && (!this.userModels || this.userModels.length === 0)) {
         await this.loadModels().catch(() => {});
+      }
+      // Batch 2/6 新面板:走独立 endpoint,不是 /api/section/<name>
+      const _customEndpoint = {
+        setup_ledger:   "/api/setup_ledger",
+        flavor_advices: "/api/flavor_advices",
+        platform_rules: "/api/platform_rules",
+      }[section];
+      if (_customEndpoint) {
+        try {
+          const r = await fetch(this._api(_customEndpoint));
+          if (!r.ok) { this.error = await r.text(); return; }
+          this.data = await r.json();
+          this.rawText = JSON.stringify(this.data, null, 2);
+        } catch (e) { this.error = e.message; }
+        return;
       }
       try {
         const r = await fetch(this._api(`/api/section/${section}`));

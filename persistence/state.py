@@ -1125,6 +1125,9 @@ class ChapterSummary:
     closing_hook_type: str = ""        # HookType.value 或空字符串
     # ── 模拟读者评论(Batch 5:comment_simulator 章后生成)──────
     simulated_comments: list[SimulatedComment] = field(default_factory=list)
+    # ── critic 最后一轮评分快照(Batch P2:UI 可视化用,不参与逻辑)─────
+    # 含 score / passed / dim_scores(10+ 维) / sp_check / fw_check / feedback / highlights
+    critic_review: dict = field(default_factory=dict)
 
 
 # ═══════════════════════════════════════════════════════

@@ -1256,6 +1256,7 @@ def api_chapter_preview(project_id, index):
         result["foreshadow_resolve"] = []
 
     # 爽点（触发的 + 待铺垫的）
+    sp_trigger_ids: list[str] = []
     try:
         from agents.satisfaction_system import get_sp_for_chapter
         sp_ops = get_sp_for_chapter(s, index)
@@ -1264,6 +1265,7 @@ def api_chapter_preview(project_id, index):
              "intensity": sp.intensity, "payoff": sp.payoff_description[:60]}
             for sp in (sp_ops.get("trigger") or [])
         ]
+        sp_trigger_ids = [sp.sp_id for sp in (sp_ops.get("trigger") or [])]
         result["sp_setup"] = [
             {"setup_content": op.get("setup_content", "")[:60]}
             for op in (sp_ops.get("setup") or [])
@@ -1271,6 +1273,23 @@ def api_chapter_preview(project_id, index):
     except Exception:
         result["sp_trigger"] = []
         result["sp_setup"] = []
+
+    # Batch 2 callback_seeds 预览 — sp 触发时查 setup_ledger 拉具体回响锚点(纯规则,不调 LLM)
+    result["callback_seeds"] = []
+    if sp_trigger_ids:
+        try:
+            from agents.setup_ledger import (
+                find_callback_seeds, format_callback_seeds_for_directive,
+            )
+            _seen = {}
+            for _sid in sp_trigger_ids:
+                for _e in find_callback_seeds(s, _sid, index, limit=3):
+                    _seen.setdefault(_e.entry_id, _e)
+            result["callback_seeds"] = format_callback_seeds_for_directive(
+                list(_seen.values())[:5]
+            )
+        except Exception as _e:
+            print(f"  [preview ch{index}] callback_seeds 预览失败:{type(_e).__name__}: {_e}")
 
     # 反转层揭露
     try:
@@ -2779,6 +2798,84 @@ def api_chapter_summaries():
 
 
 # ═══════════════════════════════════════════════════════
+#  Batch 2/6 全局只读端点 — 给侧边栏新面板用
+# ═══════════════════════════════════════════════════════
+
+@app.route("/api/setup_ledger")
+def api_setup_ledger():
+    """Batch 2:返回全书 setup_ledger 列表(7 类事件账本)。"""
+    s = _load()
+    out = []
+    for e in (getattr(s, "setup_ledger", None) or []):
+        out.append({
+            "entry_id":         e.entry_id,
+            "chapter":          e.chapter,
+            "kind":             e.kind.value if hasattr(e.kind, "value") else str(e.kind),
+            "actor":            e.actor,
+            "counterpart":      e.counterpart,
+            "quote":            e.quote,
+            "scene_summary":    e.scene_summary,
+            "suggested_sp_id":  e.suggested_sp_id,
+            "payoff_status":    e.payoff_status,
+            "callback_chapter": e.callback_chapter,
+            "callback_quote":   e.callback_quote,
+        })
+    # 顺手返回统计,方便前端不必再算
+    by_kind = {}
+    by_status = {"pending": 0, "partial": 0, "paid": 0}
+    for e in out:
+        by_kind[e["kind"]] = by_kind.get(e["kind"], 0) + 1
+        by_status[e["payoff_status"]] = by_status.get(e["payoff_status"], 0) + 1
+    return jsonify({
+        "entries": out,
+        "total": len(out),
+        "by_kind": by_kind,
+        "by_status": by_status,
+    })
+
+
+@app.route("/api/flavor_advices")
+def api_flavor_advices():
+    """Batch 6:返回滚动 5 条调味建议。"""
+    s = _load()
+    out = []
+    for a in (getattr(s, "flavor_advices", None) or []):
+        out.append({
+            "generated_at_chapter": a.generated_at_chapter,
+            "target_range": a.target_range,
+            "advice": list(a.advice or []),
+            "reasoning": a.reasoning,
+        })
+    return jsonify({"advices": out, "total": len(out)})
+
+
+@app.route("/api/platform_rules")
+def api_platform_rules():
+    """Batch 6:返回当前项目加载的平台 rulebook 原文 + 平台名 + 支持列表。"""
+    s = _load()
+    platform_name = ""
+    try:
+        platform_name = (s.concept_pitch.target_platform or "").strip()
+    except Exception:
+        pass
+    rules = getattr(s, "platform_rules", "") or ""
+    supported = []
+    try:
+        from utils.platform_rulebook import list_supported_platforms, resolve_platform_alias
+        supported = list_supported_platforms()
+        resolved = resolve_platform_alias(platform_name) if platform_name else ""
+    except Exception:
+        resolved = ""
+    return jsonify({
+        "platform": platform_name,
+        "resolved_base": resolved,
+        "rules": rules,
+        "supported": supported,
+        "has_rules": bool(rules.strip()),
+    })
+
+
+# ═══════════════════════════════════════════════════════
 #  检查类
 # ═══════════════════════════════════════════════════════
 
@@ -3900,6 +3997,8 @@ def _summary_to_dict(c):
         "closing_hook_type": getattr(c, "closing_hook_type", "") or "",
         "setup_callbacks_invoked": list(getattr(c, "setup_callbacks_invoked", []) or []),
         "simulated_comments": comments,
+        # P2:critic 最后一轮快照 — UI 可显示 dim_scores 13 维
+        "critic_review": dict(getattr(c, "critic_review", {}) or {}),
         "is_draft": False,
         "status": "final",
         "row_id": f"{c.index}:final",
