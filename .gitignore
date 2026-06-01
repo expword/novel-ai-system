@@ -1,0 +1,31 @@
+# ─── LangGraph runtime data ─────────────────────────────
+.langgraph_api/
+checkpoints.sqlite
+checkpoints.sqlite-*
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# ─── Python cache ───────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# ─── User-generated novel project data ──────────────────
+projects/
+
+# ─── Secrets / Environment ──────────────────────────────
+.env
+*.env
+.env.local
+user_models.json
+*.key
+
+# ─── IDE / OS ───────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

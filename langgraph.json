@@ -1,0 +1,10 @@
+{
+    "dependencies": ["."],
+    "graphs": {
+        "planning_mock": "./graphs/studio_planning.py:graph_mock",
+        "planning_real": "./graphs/studio_planning.py:graph_real",
+        "chapter_cycle_mock": "./graphs/chapter_subgraph.py:chapter_graph_mock"
+    },
+    "env": ".env",
+    "python_version": "3.11"
+}
