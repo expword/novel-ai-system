@@ -165,17 +165,24 @@ def review_chapter(state: NovelState, directive: ChapterDirective, content: str)
             empty_ok=True,
         )
     except Exception as e:
-        print(f"  [!] SetupReviewer 调用失败：{e}——跳过 LLM 审核（lifecycle 兜底仍生效）")
+        # 不兜底默认 pass——审核服务故障 = 本章没被审，必须让 caller 看到这个事实
+        print(f"  [!] SetupReviewer 调用失败：{e}——返回 review_failed 信号（lifecycle 兜底仍生效）")
         return _merge_lifecycle_issues(
-            {"overall_score": 10, "verdict": "pass", "issues": [],
-             "rewrite_directives": "", "reviewer_note": f"审核调用失败：{e}"},
+            {"overall_score": 0, "verdict": "review_failed", "issues": [],
+             "rewrite_directives": "",
+             "reviewer_note": f"审核服务调用失败：{e}",
+             "review_failed": True,
+             "review_failed_reason": f"{type(e).__name__}: {str(e)[:120]}"},
             lifecycle_issues,
         )
 
     if not data:
         return _merge_lifecycle_issues(
-            {"overall_score": 10, "verdict": "pass", "issues": [],
-             "rewrite_directives": "", "reviewer_note": "审核 LLM 无返回"},
+            {"overall_score": 0, "verdict": "review_failed", "issues": [],
+             "rewrite_directives": "",
+             "reviewer_note": "审核 LLM 无返回",
+             "review_failed": True,
+             "review_failed_reason": "LLM 多轮重试后仍无合规 JSON 返回"},
             lifecycle_issues,
         )
 

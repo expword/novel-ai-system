@@ -23,6 +23,172 @@ from agents.protagonist_journey import get_stage_beat_context
 from agents.character_web import get_web_context_for_chapter
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  锚点具体度校验 (P0-1) —— 让 LLM 写"具体的话/感官细节",不接受水句
+#  通过 request_json 的 custom_validator 路径触发自动重试 (max_retries 配合)
+# ═══════════════════════════════════════════════════════════════════
+
+# 整条命中即视为占位/水句
+_BEAT_FILLER_LITERALS = {
+    "话1", "话2", "话3", "话4", "示范对话", "示范台词", "示范对白",
+    "具体台词", "占位",
+    "细节1", "细节2", "细节3", "感官细节", "感官细节1",
+    "悬念待续", "留下悬念", "且听下回", "未完待续",
+    "待定", "todo", "TODO", "TBD", "tbd",
+    "可能反转", "情绪变化", "推进剧情",
+}
+
+
+def _safe_int(v, default: int = 0, lo: int = -10, hi: int = 10) -> int:
+    """把任意值规范为 [lo, hi] 区间的 int,失败返回 default。"""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(n, hi))
+
+
+def _check_emotion_steps(chapter_index: int, beats: list) -> None:
+    """P0-5: 情绪压差校验——相邻幕台阶不合理 → progress_warning。
+
+    规则:
+    · 连续 3 幕 exit_emotion ≤ -6 = 连续抑郁(读者陪着抑郁→弃书)
+    · 连续 3 幕 entry_emotion ≥ +7 = 连续高潮(审美疲劳)
+    · 相邻幕情绪台阶 |Δ| > 12 = 暴起暴跌(除非戏剧节拍要求)
+    """
+    if not beats or len(beats) < 2:
+        return
+    issues: list[str] = []
+
+    # 连续低谷
+    deep_streak = 0
+    for b in beats:
+        if int(getattr(b, "exit_emotion", 0) or 0) <= -6:
+            deep_streak += 1
+            if deep_streak >= 3:
+                issues.append(f"连续 3+ 幕 exit_emotion ≤ -6 (连续抑郁,读者易弃书)")
+                break
+        else:
+            deep_streak = 0
+
+    # 连续高潮
+    high_streak = 0
+    for b in beats:
+        if int(getattr(b, "entry_emotion", 0) or 0) >= 7:
+            high_streak += 1
+            if high_streak >= 3:
+                issues.append(f"连续 3+ 幕 entry_emotion ≥ +7 (连续高潮,审美疲劳)")
+                break
+        else:
+            high_streak = 0
+
+    # 暴起暴跌
+    for i in range(1, len(beats)):
+        prev_exit = int(getattr(beats[i - 1], "exit_emotion", 0) or 0)
+        this_entry = int(getattr(beats[i], "entry_emotion", 0) or 0)
+        delta = abs(this_entry - prev_exit)
+        if delta > 12:
+            issues.append(
+                f"幕{i}↔幕{i+1} 情绪台阶 |Δ|={delta} > 12 "
+                f"({prev_exit:+d} → {this_entry:+d},暴起暴跌)"
+            )
+
+    if not issues:
+        return
+    try:
+        from persistence.checkpoint import add_progress_warning
+        add_progress_warning(
+            level="warn",
+            source=f"chapter:{chapter_index}:emotion_steps",
+            message=(
+                f"第 {chapter_index} 章情绪台阶异常: " + " | ".join(issues[:3])
+                + " —— 检查 scene_beats[*].entry_emotion/exit_emotion,"
+                "或在 web UI 编辑此章蓝图"
+            ),
+        )
+    except Exception:
+        pass
+
+
+def _is_beat_filler(s: str) -> bool:
+    """判定单条锚点是否水句/占位/抽象。"""
+    s_clean = (s or "").strip().strip("「」\"'《》()（）")
+    if not s_clean:
+        return True
+    if s_clean in _BEAT_FILLER_LITERALS:
+        return True
+    # 极短的(< 8 字)且不含具体动词/标点的大概率是水
+    if len(s_clean) < 8:
+        return True
+    return False
+
+
+def _validate_scene_concreteness(data: dict) -> tuple[bool, str]:
+    """校验 scene_beats 锚点具体度,容差 ≤3 处瑕疵。
+
+    检查项:
+    · 每幕 content 长度 ≥180 字 (schema 要 200-300)
+    · dialogue_seeds 每条 ≥20 字 + 非占位词
+    · sensory_anchors 每条 ≥15 字 + 非占位词
+    · closing_hook ≥20 字 + 非占位词
+
+    返回 (ok, err_msg)。不通过时 request_json 自动重试。
+    """
+    if not isinstance(data, dict):
+        return True, ""
+
+    beats = data.get("scene_beats") or data.get("beats") or data.get("scenes") or []
+    if not isinstance(beats, list) or not beats:
+        return True, ""
+
+    issues: list[str] = []
+    for i, b in enumerate(beats, 1):
+        if not isinstance(b, dict):
+            continue
+
+        content = (b.get("content") or "").strip()
+        if 0 < len(content) < 180:
+            issues.append(f"幕{i}.content 仅{len(content)}字(<180)")
+
+        for j, s in enumerate((b.get("dialogue_seeds") or []), 1):
+            if not isinstance(s, str):
+                continue
+            s_str = s.strip()
+            if not s_str:
+                continue
+            if len(s_str) < 15:
+                issues.append(f"幕{i}.dialogue_seed[{j}]仅{len(s_str)}字(<15)")
+            elif _is_beat_filler(s_str):
+                issues.append(f"幕{i}.dialogue_seed[{j}]是占位:「{s_str[:25]}」")
+
+        for j, s in enumerate((b.get("sensory_anchors") or []), 1):
+            if not isinstance(s, str):
+                continue
+            s_str = s.strip()
+            if not s_str:
+                continue
+            if len(s_str) < 12:
+                issues.append(f"幕{i}.sensory[{j}]仅{len(s_str)}字(<12)")
+            elif _is_beat_filler(s_str):
+                issues.append(f"幕{i}.sensory[{j}]是占位:「{s_str[:25]}」")
+
+    hook = (data.get("closing_hook") or "").strip()
+    if hook:
+        if len(hook) < 15:
+            issues.append(f"closing_hook 仅{len(hook)}字(<15)")
+        elif _is_beat_filler(hook):
+            issues.append(f"closing_hook 是占位:「{hook[:30]}」")
+
+    # 容差: ≤3 处瑕疵接受 (避免 LLM 反复重试浪费 token)
+    if len(issues) <= 3:
+        return True, ""
+    return False, (
+        f"场景锚点具体度不足({len(issues)}处问题): "
+        + " | ".join(issues[:6])
+        + " —— 请填具体台词/感官细节/具体钩子,不要占位词"
+    )
+
+
 
 
 
@@ -461,6 +627,14 @@ def _plan_structure(
         "例：他抬手按住她的肩——但手停在半寸外",
         "例：玉佩突然烫手，刚才还冰凉"
       ],
+      "paragraph_mix": {
+        "dialogue": 40, "action": 30, "inner": 20, "desc": 10,
+        "_comment": "本幕段落比例(总和必须=100)。按场景类型给:对峙幕高 dialogue(50+),战斗幕高 action(50+),独白幕高 inner(40+),环境/铺垫幕 desc 提高。writer 按此分配段落。"
+      },
+      "emotional_residue_from_prev": "本幕开场要承接上一幕末的情绪余波(30-50 字具体身体/感官/思绪表现)。例:「他手指仍在微微发抖,刚才那一刀的反震还停留在手腕」。**第1幕填空串**(它没有上一幕)。",
+      "entry_emotion": 0,
+      "exit_emotion": 0,
+      "_emotion_comment": "本幕入场/末尾主角情绪值(-10 深渊 → 0 平静 → +10 极致高潮)。chapter_planner 必填,防连续抑郁或连续高潮。",
 
       "sensory_hook": "【已废弃字段，保留兼容性，写空串即可】",
       "transition_type": "continuous|soft_cut|hard_cut（第1幕必须 continuous；其余默认 continuous，只在真必要时才用 hard_cut）",
@@ -469,6 +643,7 @@ def _plan_structure(
     }}
   ],
   "closing_hook": "章末画面（50字）",
+  "closing_hook_secondary": "章末二钩——情感回响层(30-50 字)。主钩(closing_hook)是悬念/反转/物理钩;二钩是情感回响。两钩必须**不同类型**。例: 主钩='反派一句话颠覆主角认知',二钩='主角看着月亮想起母亲那句话'。无法配二钩时填空串。",
   "closing_hook_type": "suspense|reversal|info_reveal|emotional|physical|death|cliff",
   "reader_expectation_decisions": [
     "satisfy|reverse|stack（对每条 reader_expectations 按顺序给一个决策;无 expectations 时填空数组）"
@@ -493,6 +668,7 @@ def _plan_structure(
         min_items=2,
         max_retries=4, temperature=0.65, agent_name=f"ChapterPlanner[Ch{chapter_index}]",
         empty_ok=True,
+        custom_validator=_validate_scene_concreteness,  # 锚点具体度校验,水句重生
     )
     if not data:
         data = {}
@@ -534,6 +710,29 @@ def _plan_structure(
         sensory_anchors = _clean_list("sensory_anchors", 0, 10, 80)
         dramatic_beats = _clean_list("dramatic_beats", 0, 4, 60)
 
+        # P1-3: paragraph_mix 解析(总和归一化到 100,缺失字段补 0)
+        raw_mix = b.get("paragraph_mix") or {}
+        paragraph_mix = {}
+        if isinstance(raw_mix, dict):
+            cleaned = {}
+            for k in ("dialogue", "action", "inner", "desc"):
+                v = raw_mix.get(k, 0)
+                try:
+                    cleaned[k] = max(0, int(v))
+                except Exception:
+                    cleaned[k] = 0
+            total = sum(cleaned.values())
+            if total > 0:
+                # 归一化到总和 100 (避免 LLM 给的总和略偏)
+                scale = 100.0 / total
+                paragraph_mix = {k: round(v * scale) for k, v in cleaned.items()}
+                # 修正舍入误差让总和精确 100
+                diff = 100 - sum(paragraph_mix.values())
+                if diff != 0:
+                    # 把误差加到最大项
+                    max_key = max(paragraph_mix, key=lambda kk: paragraph_mix[kk])
+                    paragraph_mix[max_key] += diff
+
         # 兼容老的 sensory_hook——升级为 sensory_anchors[0]
         if not sensory_anchors and b.get("sensory_hook"):
             sh_v = str(b.get("sensory_hook"))[:80].strip()
@@ -556,6 +755,10 @@ def _plan_structure(
             dialogue_seeds=dialogue_seeds,
             sensory_anchors=sensory_anchors,
             dramatic_beats=dramatic_beats,
+            paragraph_mix=paragraph_mix,
+            emotional_residue_from_prev=str(b.get("emotional_residue_from_prev") or "").strip()[:120],
+            entry_emotion=_safe_int(b.get("entry_emotion"), 0, -10, 10),
+            exit_emotion=_safe_int(b.get("exit_emotion"), 0, -10, 10),
         ))
     # 硬切限额：全章最多 1 次，超出降为 soft_cut
     hard_cut_count = 0
@@ -601,12 +804,16 @@ def _plan_structure(
         chapter_delta=data.get("chapter_delta", outline_goal[:40]),
         scene_beats=beats,
         closing_hook=data.get("closing_hook", "悬念待续"),
+        closing_hook_secondary=str(data.get("closing_hook_secondary") or "").strip()[:120],
         pacing_note=data.get("pacing_note", directive.word_pace),
         structure_role=ch_structure_role,
         purpose=ch_purpose,
         expression=ch_expression,
         closing_hook_spec=_hook_spec,
     )
+
+    # P0-5: 情绪压差校验——防"连续抑郁"/"连续高潮"——只 warn 不 reject
+    _check_emotion_steps(chapter_index, bp.scene_beats)
 
     # 回写到 ChapterDirective（供 writer/critic 使用）
     directive.structure_role = ch_structure_role or directive.structure_role

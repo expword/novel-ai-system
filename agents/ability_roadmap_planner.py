@@ -141,6 +141,10 @@ def _design_asset_list(state: NovelState) -> list[dict]:
       "source": "穿越随身|师承|拾获|血脉觉醒|系统绑定|...",
       "description": "整体描述（50字内）",
       "unlock_condition": "首次获得/解锁的条件（30字内，'获得即可用'也行）",
+      "usage_rule": "什么时候允许使用；必须写触发条件/场景，不许写随时可用",
+      "effect_scope": "能做到什么；写清对象、范围、强度",
+      "hard_limits": "明确不能做到什么；至少 2 条硬边界",
+      "cost_rule": "每次或关键使用的代价/冷却/风险；不能写无代价",
       "holder_role": "主角自身|伙伴|对手|中立|隐藏",
       "holder_name": "持有者具体名字（主角填 '{prot_name}'）",
       "is_protagonist_signature": true/false,
@@ -156,6 +160,10 @@ def _design_asset_list(state: NovelState) -> list[dict]:
     example = (
         '{"assets":[{"name":"豆包","entry_kind":"ability","source":"穿越随身",'
         '"description":"主角穿越时随身带的 AI 助手","unlock_condition":"获得即可用",'
+        '"usage_rule":"主角主动提问且问题属于现代通用知识时可用",'
+        '"effect_scope":"提供原理、公式、流程、图纸思路和策略建议",'
+        '"hard_limits":"不能变出物品；不能预知古代具体人事；不能判断本地律法真伪",'
+        '"cost_rule":"消耗注意力和时间，复杂问题会导致头痛疲惫",'
         '"holder_role":"主角自身","holder_name":"' + prot_name + '","is_protagonist_signature":true,'
         '"external_llm_profile":"doubao","plot_integration":"穿越苏醒后发现脑内有 AI","narrative_hook":"借豆包反推商业/历史"}]}'
     )
@@ -281,9 +289,71 @@ def _design_lifecycle(state: NovelState, asset_meta: dict,
         empty_ok=True,
     )
     if not data:
-        return []
+        return _fallback_lifecycle_nodes(asset_meta)
     nodes = data.get("lifecycle_nodes") or data.get("nodes") or data.get("lifecycle") or []
-    return nodes if isinstance(nodes, list) else []
+    return nodes if isinstance(nodes, list) else _fallback_lifecycle_nodes(asset_meta)
+
+
+def _fallback_lifecycle_nodes(asset_meta: dict) -> list[dict]:
+    """LLM 失败时的保守 lifecycle。
+
+    核心原则：获得、理解、第一次实用分开，避免第一章就把金手指写成万能问答机。
+    """
+    name = (asset_meta.get("name") or "asset").strip()
+    is_external_ai = bool((asset_meta.get("external_llm_profile") or "").strip())
+    if is_external_ai:
+        return [
+            {
+                "node_type": "setup",
+                "target_volume": 1,
+                "target_chapter": 1,
+                "prerequisites": "主角苏醒后察觉意识中有异样回声",
+                "narrative_purpose": f"铺垫《{name}》存在但不解决问题",
+                "is_dramatic": False,
+            },
+            {
+                "node_type": "acquired",
+                "target_volume": 1,
+                "target_chapter": 2,
+                "prerequisites": "主角独处并尝试确认脑内工具边界",
+                "narrative_purpose": f"发现《{name}》只能给现代原则",
+                "is_dramatic": True,
+            },
+            {
+                "node_type": "first_use",
+                "target_volume": 1,
+                "target_chapter": 6,
+                "prerequisites": "主角已亲手整理出足够本地账册材料",
+                "narrative_purpose": f"首次用《{name}》查询现代会计原则",
+                "is_dramatic": True,
+            },
+            {
+                "node_type": "constraint_lifted",
+                "target_volume": 1,
+                "target_chapter": 18,
+                "prerequisites": "主角录入一批本地债务与物价信息",
+                "narrative_purpose": f"《{name}》可辅助整理本地数据",
+                "is_dramatic": True,
+            },
+        ]
+    return [
+        {
+            "node_type": "acquired",
+            "target_volume": 1,
+            "target_chapter": 0,
+            "prerequisites": "主角进入第一卷核心困境",
+            "narrative_purpose": f"获得《{name}》但先建立限制",
+            "is_dramatic": True,
+        },
+        {
+            "node_type": "first_use",
+            "target_volume": 1,
+            "target_chapter": 0,
+            "prerequisites": "主角付出代价并找到合适场景",
+            "narrative_purpose": f"首次有代价地使用《{name}》",
+            "is_dramatic": True,
+        },
+    ]
 
 
 # ═══════════════════════════════════════════════════════
@@ -308,6 +378,29 @@ def plan_asset_roadmap(state: NovelState, force: bool = False) -> list[SpecialAb
     print("  ── AbilityRoadmapPlanner Step 1：决定 asset 清单 ──")
     asset_dicts = _design_asset_list(state)
     if not asset_dicts:
+        if existing:
+            print("  ⚠ asset 清单生成为空——保留已有 special_abilities，并补齐缺失 lifecycle")
+            final_assets = []
+            for asset in existing:
+                if not getattr(asset, "lifecycle_nodes", None):
+                    fallback_meta = {
+                        "name": asset.name,
+                        "external_llm_profile": asset.external_llm_profile,
+                    }
+                    asset.lifecycle_nodes = [
+                        LifecycleNode(
+                            node_type=str(nd.get("node_type") or "acquired"),
+                            target_volume=int(nd.get("target_volume", 1) or 1),
+                            target_chapter=int(nd.get("target_chapter", 0) or 0),
+                            prerequisites=str(nd.get("prerequisites") or "")[:200],
+                            narrative_purpose=str(nd.get("narrative_purpose") or "")[:200],
+                            is_dramatic=bool(nd.get("is_dramatic", False)),
+                        )
+                        for nd in _fallback_lifecycle_nodes(fallback_meta)
+                    ]
+                final_assets.append(asset)
+            state.power_system.special_abilities = final_assets
+            return final_assets
         print("  ✓ LLM 判定本书无需特殊 asset（题材使然）")
         state.power_system.special_abilities = []
         return []
@@ -349,6 +442,10 @@ def plan_asset_roadmap(state: NovelState, force: bool = False) -> list[SpecialAb
             source=str(ad.get("source") or "")[:50],
             description=str(ad.get("description") or "")[:200],
             unlock_condition=str(ad.get("unlock_condition") or "")[:100],
+            usage_rule=str(ad.get("usage_rule") or "")[:200],
+            effect_scope=str(ad.get("effect_scope") or "")[:200],
+            hard_limits=str(ad.get("hard_limits") or "")[:240],
+            cost_rule=str(ad.get("cost_rule") or "")[:200],
             holder_role=str(ad.get("holder_role") or "主角自身"),
             holder_name=holder,
             is_protagonist_signature=bool(ad.get("is_protagonist_signature", False)),

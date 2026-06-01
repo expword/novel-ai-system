@@ -678,6 +678,7 @@ def _design_by_legacy_batches(state: NovelState) -> None:
 
 def _common_context(state) -> str:
     """所有核心人物设计共享的世界/势力上下文 + 立项取向（反派洗白/感情线等关键决策源）。"""
+    from utils.intent_helper import build_intent_brief
     realm_list = state.power_system.realm_list_str() if state.power_system else "（本书无层级体系）"
     factions_brief = "\n".join(
         f"- [{f.tier_name()}] {f.name}（{f.faction_type}）：{f.surface_goal[:30]}"
@@ -693,7 +694,9 @@ def _common_context(state) -> str:
     basis_section = (basis_block + "\n\n") if basis_block else ""
     pool_block = _format_real_persons_pool(state)
     pool_section = (pool_block + "\n\n") if pool_block else ""
+    intent_brief = build_intent_brief(state, "character_designer")
     return (
+        f"{intent_brief}"
         f"{basis_section}"
         f"{pool_section}"
         f"{world_ctx}\n\n"

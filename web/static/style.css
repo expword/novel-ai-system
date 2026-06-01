@@ -1892,6 +1892,27 @@ body.dark .chip-real-person {
 body.dark .ps-int-low { background: #334155; color: #cbd5e1; }
 body.dark .ps-int-mid { background: #5a3a0c; color: #fde68a; }
 body.dark .ps-int-high { background: #7f1d1d; color: #fecaca; }
+/* plot_supplement kind 8 类 chip 配色 */
+.ps-kind {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  font-weight: 600; white-space: nowrap;
+}
+.ps-kind-suspense           { background: #dbeafe; color: #1e40af; }
+.ps-kind-emotional          { background: #fce7f3; color: #9d174d; }
+.ps-kind-philosophical      { background: #e9d5ff; color: #6b21a8; }
+.ps-kind-humorous           { background: #fef9c3; color: #854d0e; }
+.ps-kind-moving             { background: #cffafe; color: #155e75; }
+.ps-kind-setting_payoff     { background: #fed7aa; color: #9a3412; }
+.ps-kind-relationship_twist { background: #fee2e2; color: #991b1b; }
+.ps-kind-signature_detail   { background: #d1fae5; color: #065f46; }
+body.dark .ps-kind-suspense           { background: #1e3a8a; color: #bfdbfe; }
+body.dark .ps-kind-emotional          { background: #831843; color: #fbcfe8; }
+body.dark .ps-kind-philosophical      { background: #581c87; color: #e9d5ff; }
+body.dark .ps-kind-humorous           { background: #713f12; color: #fef08a; }
+body.dark .ps-kind-moving             { background: #164e63; color: #a5f3fc; }
+body.dark .ps-kind-setting_payoff     { background: #7c2d12; color: #fed7aa; }
+body.dark .ps-kind-relationship_twist { background: #7f1d1d; color: #fecaca; }
+body.dark .ps-kind-signature_detail   { background: #064e3b; color: #a7f3d0; }
 .ps-where { font-size: 11px; opacity: 0.7; }
 .ps-status {
   margin-left: auto;
@@ -2177,6 +2198,132 @@ body.dark .ps-status-rejected { background: #475569; color: #cbd5e1; }
   overflow-y: auto;
   max-height: 50vh;
   margin: 0 0 14px;
+}
+
+/* ═══ 审核 modal 结构化数据视图（替换 .rm-data-pre 纯 JSON dump）═══ */
+.rmp-root {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 56vh;
+  padding: 4px 6px 4px 2px;
+  margin: 0 0 14px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+/* 顶层对象：每个字段一张横向卡片 */
+.rmp-obj-root {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.rmp-obj-root > .rmp-field {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 14px;
+  padding: 10px 14px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  align-items: start;
+}
+.rmp-obj-root > .rmp-field:hover { border-color: rgba(122, 167, 255, 0.35); }
+
+/* 嵌套对象（数组里的 dict、对象里的对象）：紧凑表格式排版 */
+.rmp-obj-nested {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.rmp-obj-nested > .rmp-field {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 2px 0;
+}
+
+/* 字段名 chip */
+.rmp-key {
+  font-size: 12.5px;
+  color: var(--accent);
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  padding-top: 2px;
+  word-break: break-all;
+  cursor: help;
+}
+.rmp-obj-nested > .rmp-field > .rmp-key {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.rmp-val {
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* 原始类型 */
+.rmp-empty { color: var(--text-dim); font-style: italic; }
+.rmp-text { color: var(--text); }
+.rmp-text-long {
+  color: var(--text);
+  line-height: 1.75;
+  padding: 4px 0;
+  white-space: normal;
+}
+.rmp-num {
+  color: #ffd66b;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-weight: 500;
+}
+.rmp-bool {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.rmp-bool-true { background: rgba(74, 222, 128, 0.18); color: #4ade80; }
+.rmp-bool-false { background: rgba(248, 113, 113, 0.18); color: #f87171; }
+
+/* 短字符串数组 → chip 云 */
+.rmp-chips {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.rmp-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  background: rgba(122, 167, 255, 0.13);
+  border: 1px solid rgba(122, 167, 255, 0.28);
+  border-radius: 12px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+/* 对象数组 → 编号卡片列表 */
+.rmp-cards {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.rmp-card {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.rmp-card-head {
+  font-size: 11.5px;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+}
+.rmp-card-body { padding-left: 2px; }
+
+/* 浅色模式适配 */
+.dark .rmp-obj-root > .rmp-field { background: rgba(255, 255, 255, 0.02); }
+body:not(.dark) .rmp-card { background: rgba(0, 0, 0, 0.03); }
+body:not(.dark) .rmp-chip {
+  background: rgba(122, 167, 255, 0.10);
 }
 
 /* 内容区底部操作按钮 */

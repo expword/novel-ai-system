@@ -172,13 +172,28 @@ minor：小瑕疵——记录即可
 }}
 没问题就输出 {{"issues": []}}。"""
 
-    data = request_json(
-        system=SYSTEM, user=prompt,
-        required_keys=["issues"],
-        max_retries=3, temperature=0.4,
-        agent_name=f"VolumeReviewer[V{volume_index}]",
-        empty_ok=True,
-    )
+    # empty_ok=False——审核服务故障必须让 caller 看到，不静默"通过"
+    try:
+        data = request_json(
+            system=SYSTEM, user=prompt,
+            required_keys=["issues"],
+            max_retries=3, temperature=0.4,
+            agent_name=f"VolumeReviewer[V{volume_index}]",
+            empty_ok=False,
+        )
+    except Exception as _e:
+        from persistence.checkpoint import add_progress_warning
+        add_progress_warning(
+            level="error",
+            source=f"volume:{volume_index}:reviewer",
+            message=(
+                f"第 {volume_index} 卷 volume_reviewer 审核服务故障"
+                f"（{type(_e).__name__}: {str(_e)[:120]}）"
+                "——本卷未通过 LLM 审核就放行了；请检查审核模型/key 并酌情人工复审"
+            ),
+        )
+        print(f"  ❌ [volume_reviewer] V{volume_index} 审核失败：{type(_e).__name__}: {_e}")
+        return []
     if not data:
         return []
     issues = []

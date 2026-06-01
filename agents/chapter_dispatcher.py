@@ -19,12 +19,17 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-# 前 N 章判定为"开篇章"——窗口扩大到 5 章，分阶段路由
-OPENING_CHAPTER_THRESHOLD = 5
+# 前 N 章判定为"开篇章"——窗口 10 章，3 阶段路由
+# 阶段:1-3 钩人 / 4-7 立住 / 8-10 入主线 (取代旧"黄金 3 章"教条)
+OPENING_CHAPTER_THRESHOLD = 10
 
 
 def _build_world_primer(state) -> str:
-    """读者必须在前 5 章接收的硬事实清单——开篇章硬注入 must_include。"""
+    """读者必须在开篇 10 章接收的硬事实清单——开篇章硬注入 must_include。
+
+    不要一次塞光——分散到 3 阶段:钩人期偏主角处境/世界基调,
+    立住期偏体系/势力,入主线期偏故事核心/反派初始。
+    """
     parts = []
     # 世界基础（power_system）
     if state.power_system:
@@ -45,14 +50,17 @@ def _build_world_primer(state) -> str:
         top_factions = [f for f in state.factions if not f.is_hidden][:3]
         if top_factions:
             parts.append("主要势力：" + " / ".join(f"{f.name}({f.tier_name()})" for f in top_factions))
-    # 主角弧线（已由 0.6 阶段确定）
-    j = state.protagonist_journey
-    if j and j.overall_theme:
-        parts.append(f"故事核心：{j.overall_theme[:60]}（致命弱点：{j.fatal_flaw[:40]}）")
+    # 故事核心（master_outline.thematic_core + 主角致命弱点）
+    mo = getattr(state, "master_outline", None)
+    core_str = (getattr(mo, "thematic_core", "") or "").strip() if mo else ""
+    if core_str:
+        flaw = (proto.fatal_flaw or "").strip() if proto else ""
+        flaw_part = f"（致命弱点：{flaw[:40]}）" if flaw else ""
+        parts.append(f"故事核心：{core_str[:60]}{flaw_part}")
     if not parts:
         return ""
     return (
-        "【读者必须在前 5 章接收的硬事实——本章正文中至少自然带出 1-2 条】\n"
+        "【读者必须在前 10 章接收的硬事实——本章正文中至少自然带出 1-2 条】\n"
         + "\n".join(f"  · {p}" for p in parts)
     )
 
@@ -138,50 +146,56 @@ def dispatch(state, directive) -> ChapterPromptPlan:
     plan.signals["is_book_opening"] = is_book_opening
 
     if is_book_opening:
-        plan.writer_variant = "opening"       # 覆盖 romance/combat——开篇优先级更高
-        plan.planner_variant = "opening"
+        # 开篇 10 章 = 卷 1 ch_idx ∈ [1, 10]:走 3 阶段路由
+        #   ch 1-3 钩人 / ch 4-7 立住 / ch 8-10 入主线
+        # writer_variant 由阶段决定;详细硬指引在 prompt_variants.WRITER_SYSTEM_<阶段>
+        # 此处只做 archetype 标记 + 注入"硬事实清单"primer + 最小化阶段提示
+        plan.planner_variant = "opening"  # planner 仍用通用 opening 模板
         plan.context_block_ids.append("INTRO_STAKES")
-        # 开篇温度稍降，稳一点
         plan.writer_temperature = 0.75
-        # 按 ch_idx 分阶段路由——每章侧重不同
-        if ch_idx == 1:
-            plan.archetype = "stage1_cold_open_hook"
+        vol_idx = getattr(directive, "volume_index", 0)
+        if vol_idx == 1 and 1 <= ch_idx <= 10:
+            if 1 <= ch_idx <= 3:
+                phase = "opening_kick_off"
+                phase_label = "钩人期 (1-3 章)"
+            elif 4 <= ch_idx <= 7:
+                phase = "opening_establish"
+                phase_label = "立住期 (4-7 章)"
+            else:  # 8-10
+                phase = "opening_main_line"
+                phase_label = "入主线期 (8-10 章)"
+            plan.writer_variant = phase
+            plan.archetype = f"{phase}:ch{ch_idx}"
+            plan.signals["opening_phase"] = phase
+            # 阶段最小提示:只补一句章在阶段中的位置,具体硬指引由 writer_variant 的
+            # SYSTEM 模板承担 (prompt_variants.WRITER_SYSTEM_<phase>)。
             plan.must_include_hints.append(
-                "本章是全书第 1 章——首要任务是【钩住读者】：第一幕就建立读者对主角的强情绪锚点"
-                "（困境/渴望/孤独/不甘/不服/秘密之一），章末必须留一个让读者非翻下一章不可的悬念。"
-                "不要急于全盘铺设定，画面感和情绪锚点优先。"
+                f"本章是开篇{phase_label}的第 {ch_idx} 章——按本期任务执行,不要复述前/后阶段任务。"
             )
-        elif ch_idx == 2:
-            plan.archetype = "stage2_world_establish"
-            plan.must_include_hints.append(
-                "本章是第 2 章——任务是【把世界讲清楚】：通过场景/对话/冲突自然带出力量体系/势力格局/世界规则的核心 2-3 条。"
-                "不要无脑信息倾倒（不要长段落讲设定），要用主角的眼睛和处境让读者读懂世界的运转方式。"
-            )
-        elif ch_idx == 3:
-            plan.archetype = "stage3_inciting_incident"
-            plan.must_include_hints.append(
-                "本章是第 3 章——任务是【点燃故事】：必须发生一个推动主角离开现状的关键事件（遭遇/打击/邀请/发现/失去之一），"
-                "让前 2 章建立的现状被打破，让读者明白本书的'故事'真正开始了。"
-            )
-        elif ch_idx in (4, 5):
-            plan.archetype = "stage45_consolidate"
-            plan.must_include_hints.append(
-                f"本章是第 {ch_idx} 章——任务是【巩固 + 推进】：让主角对第 3 章的事件做出真实反应/抉择，"
-                f"开始进入主线。前几章已建立的世界事实/角色关系应该回响一次（让读者觉得'这书没忘'）。"
-            )
-        # 所有开篇 5 章硬注入"读者必须接收的硬事实清单"
+        else:
+            # 卷 1 之外的开篇章 (不应该出现,容错走通用 opening)
+            plan.writer_variant = "opening"
+    else:
+        # 非全书开篇,但可能是某卷的卷首/卷末——P1-4 专项 prompt
+        vol_idx = getattr(directive, "volume_index", 0)
+        # 取本卷起讫章号(从 state)
+        try:
+            vol = state.get_volume(vol_idx) if hasattr(state, "get_volume") else None
+        except Exception:
+            vol = None
+        if vol is not None and vol_idx >= 2:
+            if ch_idx == vol.chapter_start:
+                plan.writer_variant = "volume_opener"
+                plan.archetype = f"volume_opener:V{vol_idx}"
+                plan.signals["is_volume_opener"] = True
+            elif ch_idx == vol.chapter_end:
+                plan.writer_variant = "volume_finale"
+                plan.archetype = f"volume_finale:V{vol_idx}"
+                plan.signals["is_volume_finale"] = True
+        # 所有开篇 10 章硬注入"读者必须接收的硬事实清单"
         primer = _build_world_primer(state)
         if primer:
             plan.must_include_hints.append(primer)
-
-        # Batch 4: 卷 1 第 1/2/3 章 → 黄金三章独立 writer system(覆盖 opening 变体)
-        # 网文 80% 决生死的位置,每章有独立硬约束(首句勾人 / 第一个小爽 / 拍案级钩子)
-        vol_idx = getattr(directive, "volume_index", 0)
-        if vol_idx == 1 and ch_idx in (1, 2, 3):
-            _golden = {1: "golden_one", 2: "golden_two", 3: "golden_three"}[ch_idx]
-            plan.writer_variant = _golden
-            plan.archetype = f"golden_three:ch{ch_idx}"
-            plan.signals["golden_three"] = ch_idx
 
     # ── 信号：子类型 ──
     subtype = detect_subgenre(state)

@@ -54,7 +54,10 @@ def build_world(state: NovelState) -> None:
     # Phase 2.1:thread-local user_feedback 注入(带反馈重生成时,modal 的反馈进这里)
     from utils.feedback_helper import get_user_feedback_prefix
     feedback_prefix = get_user_feedback_prefix()
-    prompt = f"""{feedback_prefix}
+    # 用户创作意图（world_tone_hint / tone_summary / raw_description）
+    from utils.intent_helper import build_intent_brief
+    intent_brief = build_intent_brief(state, "world_builder")
+    prompt = f"""{feedback_prefix}{intent_brief}
 请为《{state.title}》构建详细的世界观设定。
 
 {basis_section}{world_ctx}

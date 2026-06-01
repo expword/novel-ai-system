@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 from persistence.state import NovelState, VersionSnapshot
-from persistence.checkpoint import _to_json, _load_state, STATE_FILE
+from persistence.checkpoint import _to_json, _load_state
 
 
 from project_mgmt import project_context as _pctx
@@ -24,7 +24,7 @@ MAX_SNAPSHOTS = 50   # 超过这个数自动清理最旧的
 
 
 def _ensure_history_dir():
-    os.makedirs(HISTORY_DIR, exist_ok=True)
+    os.makedirs(_pctx.history_dir(), exist_ok=True)
 
 
 def snapshot(state: NovelState, label: str, phase: str = "", chapter_index: int = -1, notes: str = "") -> str:
@@ -34,11 +34,12 @@ def snapshot(state: NovelState, label: str, phase: str = "", chapter_index: int 
     """
     _ensure_history_dir()
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(HISTORY_DIR, f"state_{ts}_{label}.json")
+    history_dir = _pctx.history_dir()
+    path = os.path.join(history_dir, f"state_{ts}_{label}.json")
     # 避免重名（同秒多次调用）
     counter = 1
     while os.path.exists(path):
-        path = os.path.join(HISTORY_DIR, f"state_{ts}_{label}_{counter}.json")
+        path = os.path.join(history_dir, f"state_{ts}_{label}_{counter}.json")
         counter += 1
 
     with open(path, "w", encoding="utf-8") as f:
@@ -69,10 +70,11 @@ def _prune_old_snapshots(state: NovelState):
             continue
         # 物理删除文件
         prefix = f"state_{snap.timestamp}_{snap.label}"
-        for fname in os.listdir(HISTORY_DIR):
+        history_dir = _pctx.history_dir()
+        for fname in os.listdir(history_dir):
             if fname.startswith(prefix):
                 try:
-                    os.remove(os.path.join(HISTORY_DIR, fname))
+                    os.remove(os.path.join(history_dir, fname))
                 except OSError:
                     pass
     # 从索引里剔除
@@ -93,7 +95,7 @@ def list_snapshots(state: NovelState = None) -> list[dict]:
     # 兜底：扫目录
     _ensure_history_dir()
     result = []
-    for fname in sorted(os.listdir(HISTORY_DIR), reverse=True):
+    for fname in sorted(os.listdir(_pctx.history_dir()), reverse=True):
         if not fname.startswith("state_"):
             continue
         parts = fname[len("state_"):].rsplit(".json", 1)[0].split("_", 2)
@@ -114,7 +116,8 @@ def rollback(timestamp: str, label_hint: str = "") -> Optional[NovelState]:
     """
     _ensure_history_dir()
     candidates = []
-    for fname in os.listdir(HISTORY_DIR):
+    history_dir = _pctx.history_dir()
+    for fname in os.listdir(history_dir):
         if fname.startswith(f"state_{timestamp}"):
             if not label_hint or label_hint in fname:
                 candidates.append(fname)
@@ -122,7 +125,7 @@ def rollback(timestamp: str, label_hint: str = "") -> Optional[NovelState]:
         print(f"  ✗ 未找到 timestamp={timestamp}{' label~'+label_hint if label_hint else ''} 的快照")
         return None
     candidates.sort()
-    src = os.path.join(HISTORY_DIR, candidates[0])
+    src = os.path.join(history_dir, candidates[0])
 
     # 1. 备份当前分片 state（便于事故回滚回滚）
     try:
@@ -135,16 +138,18 @@ def rollback(timestamp: str, label_hint: str = "") -> Optional[NovelState]:
     except Exception as e:
         print(f"  ⚠ 分片备份失败（继续回滚）：{type(e).__name__}: {e}")
 
-    # 2. 单体 state.json 也备份（历史兼容）
-    if os.path.exists(STATE_FILE):
-        bak = STATE_FILE + ".before_rollback_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-        shutil.copy2(STATE_FILE, bak)
+    # 2. 单体 state.json 也备份（历史兼容）——动态取路径，不能用 checkpoint.STATE_FILE
+    #    那个是模块导入时算的快照，切换项目后指向错路径
+    state_file = _pctx.state_file()
+    if os.path.exists(state_file):
+        bak = state_file + ".before_rollback_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        shutil.copy2(state_file, bak)
         print(f"  💾 当前单体 state.json 已备份到 {bak}")
 
     # 3. 从历史快照加载 state
-    shutil.copy2(src, STATE_FILE)
+    shutil.copy2(src, state_file)
     print(f"  ↩ 已读回 {src}")
-    with open(STATE_FILE, encoding="utf-8") as f:
+    with open(state_file, encoding="utf-8") as f:
         restored = _load_state(json.load(f))
 
     # 4. 【关键】把恢复的 state 刷回分片目录——否则 load_state 优先读分片，回滚无效

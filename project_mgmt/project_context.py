@@ -21,21 +21,25 @@
 """
 from __future__ import annotations
 import os
+from contextvars import ContextVar
 
 # 默认项目 id——兼容老的 `output/` 目录结构（映射为 "main"）
 DEFAULT_PROJECT_ID = "main"
 
-_current_project: str = os.environ.get("XIAOSHUO_PROJECT_ID", DEFAULT_PROJECT_ID)
+_current_project_var: ContextVar[str] = ContextVar(
+    "xiaoshuo_current_project",
+    default=os.environ.get("XIAOSHUO_PROJECT_ID", DEFAULT_PROJECT_ID),
+)
 _paths_initialized: bool = False
 
 
 def current() -> str:
     """当前项目 id。"""
-    return _current_project
+    return _current_project_var.get()
 
 
 def project_dir(project_id: str = None) -> str:
-    pid = project_id or _current_project
+    pid = project_id or current()
     return f"projects/{pid}"
 
 
@@ -94,7 +98,7 @@ def meta_file(project_id: str = None) -> str:
 
 def ensure_project_dirs(project_id: str = None):
     """给项目建齐目录结构（不存在就创建）。"""
-    pid = project_id or _current_project
+    pid = project_id or current()
     for d in (
         project_dir(pid), checkpoint_dir(pid), history_dir(pid),
         approval_dir(pid), plans_dir(pid), control_dir(pid),
@@ -110,8 +114,7 @@ def set_project(project_id: str):
     注意：不会创建目录。仅 create() / start() 等显式"写入"场景才建目录，
     避免每次 API 请求都把不存在的 project id 物化成空目录。
     """
-    global _current_project
-    _current_project = project_id
+    _current_project_var.set(project_id)
     _apply_paths()
 
 
@@ -153,7 +156,7 @@ def check_control(project_id: str = None) -> str:
     director 调用：返回 'stop' | 'pause' | 'ok'。
     stop 优先于 pause。
     """
-    pid = project_id or _current_project
+    pid = project_id or current()
     if os.path.exists(stop_flag(pid)):
         return "stop"
     if os.path.exists(pause_flag(pid)):
@@ -167,7 +170,7 @@ def wait_while_paused(project_id: str = None, poll_interval: float = 1.0) -> str
     返回 'ok' 或 'stop'。
     """
     import time
-    pid = project_id or _current_project
+    pid = project_id or current()
     while os.path.exists(pause_flag(pid)):
         if os.path.exists(stop_flag(pid)):
             return "stop"

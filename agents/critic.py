@@ -83,6 +83,18 @@ SYSTEM_CRAFT = """你是网文编辑，专注审核章节的"工艺级质感"（
    · 本章钩子类型与计划一致且贴合 = 9-10 分
    · 钩子完全偏离计划 / 无钩子 = ≤5 分
    · 本章无钩子计划(开篇章/特殊章)时填 -1 跳过
+7. 首段钩子力度 (opening_hook_strength) ★前 10 章硬指标★
+   网文铁律: 第 1 段决定 30%+ 读者去留; 第 1 句决定 10%+ 滑走。
+   只评本章前 300 字(约第 1-2 段)是否含以下至少 1 项:
+     · 主角的具体当下处境(困境/羞辱/濒死/欲望/秘密)，**写到具体场景**而非概述
+     · 一个有张力的对话/动作/反常细节("门外传来""房间里所有镜子都被砸碎""血从指缝渗出")
+     · 一个让读者"想再看一眼"的悬念/未解
+     · 主角的强情绪锚点(不甘/孤勇/不服)被一个具体瞬间承载
+   · 含 2 项以上且自然 = 9-10
+   · 含 1 项且有力 = 7-8
+   · 含 1 项但平淡 = 5-6
+   · 白描式开篇("她叫 X, 今年 Y 岁, 是一个普通的 Z") = ≤4
+   · 前 10 章后(ch > 10)本项不强制 → 填 -1 跳过
 
 外加专项自检：
   · sp_check    爽点（"到位"/"未触发"/"部分"）
@@ -238,6 +250,7 @@ def _review_craft_level(ctx: dict) -> dict:
   "callback_fidelity": 1-10 整数（无 callback_seeds 时填 -1 跳过）,
   "length_compliance": 1-10 整数,
   "hook_type_compliance": 1-10 整数（无钩子计划时填 -1 跳过）,
+  "opening_hook_strength": 1-10 整数（ch > 10 时填 -1 跳过, ch ≤ 10 必须评）,
   "sp_check": "爽点（到位/未触发/部分）",
   "fw_check": "伏笔（完成/遗漏/部分）",
   "highlights": ["亮点 1", "亮点 2"],
@@ -303,6 +316,7 @@ def review_chapter(state: NovelState, directive: ChapterDirective, content: str)
         "callback_fidelity":  _pick(craft, "callback_fidelity"),
         "length_compliance":  _pick(craft, "length_compliance"),
         "hook_type_compliance": _pick(craft, "hook_type_compliance"),
+        "opening_hook_strength": _pick(craft, "opening_hook_strength"),
     }
 
     # 综合分：只算非 None 且 ≥0 的维度。**没数据时返回 None / passed=False**

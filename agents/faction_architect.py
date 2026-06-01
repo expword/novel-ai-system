@@ -150,8 +150,12 @@ def _design_tier_framework(
     from utils.feedback_helper import get_user_feedback_prefix
     feedback_prefix = get_user_feedback_prefix()
 
+    # 用户创作意图（反派处理策略 / 世界基调——影响最大反派层的设计调性）
+    from utils.intent_helper import build_intent_brief
+    intent_brief = build_intent_brief(state, "faction_architect")
+
     # ── A. 层级骨架（只要 tier labels，不要 factions）────────────
-    skeleton_prompt = f"""{feedback_prefix}
+    skeleton_prompt = f"""{feedback_prefix}{intent_brief}
 为《{state.title}》设计势力/组织的【层级骨架】——只给每层的 label 和内部矛盾，**不要填具体势力**。
 
 {world_ctx}
@@ -206,7 +210,7 @@ def _design_tier_framework(
         hint = t.get("tier_hint", "")
         # 保留 Step A 如果意外返回了 factions 的数据——Step B 失败时可作为降级
         existing_factions = [f for f in (t.get("factions") or []) if isinstance(f, dict) and f.get("name")]
-        prompt = f"""
+        prompt = f"""{intent_brief}
 为《{state.title}》的【第 {t_num} 层 · {t_label}】设计 {FACTIONS_PER_TIER_MIN}-{FACTIONS_PER_TIER_MAX} 个具体势力。
 
 {world_ctx}

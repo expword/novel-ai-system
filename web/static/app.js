@@ -685,6 +685,140 @@ function app() {
       }
     },
 
+    // ── 审核 modal 美化渲染：把 raw JSON 转成结构化 HTML ──
+    // 输出供 x-html 用，所有外部字符串必须经 _escHtml() 转义
+    _escHtml(str) {
+      if (str === null || str === undefined) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    },
+
+    // 字段名美化：snake_case → 中文（命中 map 时）或保留原名
+    // 立项 4 个 phase（creative_intent/concept_pitch/master_outline/protagonist_journey）
+    // 的字段优先映射；未命中字段直接显示原 key（程序员可以对回 state 字段）
+    _prettyFieldName(k) {
+      const map = {
+        // 通用
+        generated: "已生成", analyzed: "已分析", revisions: "修订记录",
+        // creative_intent
+        raw_description: "原始描述",
+        suggested_title: "建议书名", suggested_genre: "建议题材",
+        suggested_subgenre: "建议子类", suggested_theme: "建议主题",
+        audience_hint: "读者倾向", age_group_hint: "年龄段",
+        platform_hint: "平台倾向",
+        selling_points_hints: "卖点候选", benchmark_hints: "对标作品",
+        differentiation_hint: "差异化", embrace_tropes_hints: "拥抱套路",
+        avoid_tropes_hints: "回避套路", preferred_sp_types_hints: "偏好爽点类型",
+        villain_policy_hint: "反派策略", romance_policy_hint: "感情策略",
+        harem_policy_hint: "后宫策略",
+        protagonist_archetype_hint: "主角类型",
+        world_tone_hint: "世界基调", narrative_voice_hint: "叙事人称",
+        style_reference_hint: "风格参考", dialogue_style_hint: "对白风格",
+        tone_summary: "整体气质", analyzer_notes: "分析师备注",
+        // concept_pitch
+        one_line_pitch: "一句话简介", core_selling_points: "核心卖点",
+        target_audience: "目标读者", target_age_group: "年龄段",
+        target_platform: "目标平台", reader_profile: "读者画像",
+        benchmark_works: "对标作品", differentiation: "差异化定位",
+        expected_total_words: "预计总字数",
+        expected_volumes: "预计卷数",
+        expected_completion_weeks: "预计完结周数",
+        // master_outline
+        story_premise: "故事前提", central_conflict: "核心冲突",
+        thematic_core: "主题内核", character_slots: "角色槽位",
+        slot_id: "槽位ID", role_tag: "角色类型", function: "功能定位",
+        brief_hint: "简介", relationship_hint: "关系暗示",
+        narrative_arc_hint: "弧光暗示",
+        first_volume: "首登卷", last_volume: "退场卷",
+        narrative_function: "叙事功能", support_role: "辅助角色",
+        function_detail: "功能详情",
+        // protagonist_journey
+        protagonist_id: "主角ID", inner_wound: "内在创伤",
+        outer_goal: "外在目标", inner_lie: "内在谎言",
+        truth_to_learn: "终须明白的真相",
+        controlling_belief: "支配信念", growth_arc: "成长弧光",
+      };
+      return map[k] || k;
+    },
+
+    // 递归把任意 JSON 渲染成 HTML 卡片
+    // depth 仅用于控制嵌套时的样式（顶层 vs 内嵌）
+    renderPretty(data, depth = 0) {
+      // 空值
+      if (data === null || data === undefined) {
+        return '<span class="rmp-empty">—</span>';
+      }
+      // 布尔
+      if (typeof data === "boolean") {
+        return data
+          ? '<span class="rmp-bool rmp-bool-true">✓ 是</span>'
+          : '<span class="rmp-bool rmp-bool-false">✗ 否</span>';
+      }
+      // 数字
+      if (typeof data === "number") {
+        const s = Number.isFinite(data) ? data.toLocaleString("zh-CN") : String(data);
+        return `<span class="rmp-num">${this._escHtml(s)}</span>`;
+      }
+      // 字符串
+      if (typeof data === "string") {
+        if (!data.trim()) return '<span class="rmp-empty">—</span>';
+        const escaped = this._escHtml(data);
+        // 多行 / 长文本：渲染成段落块，保留换行
+        if (data.includes("\n") || data.length > 60) {
+          return `<div class="rmp-text rmp-text-long">${escaped.replace(/\n/g, "<br>")}</div>`;
+        }
+        return `<span class="rmp-text">${escaped}</span>`;
+      }
+      // 数组
+      if (Array.isArray(data)) {
+        if (data.length === 0) return '<span class="rmp-empty">— (空)</span>';
+        // 全部是原始类型 → chip 云
+        const allPrimitive = data.every(
+          (x) => x === null || typeof x !== "object"
+        );
+        if (allPrimitive) {
+          const chips = data
+            .map((x) => `<span class="rmp-chip">${this._escHtml(String(x))}</span>`)
+            .join("");
+          return `<div class="rmp-chips">${chips}</div>`;
+        }
+        // 否则 → 编号卡片列表
+        const cards = data
+          .map(
+            (x, i) =>
+              `<div class="rmp-card">` +
+              `<div class="rmp-card-head">#${i + 1}</div>` +
+              `<div class="rmp-card-body">${this.renderPretty(x, depth + 1)}</div>` +
+              `</div>`
+          )
+          .join("");
+        return `<div class="rmp-cards">${cards}</div>`;
+      }
+      // 对象
+      if (typeof data === "object") {
+        const keys = Object.keys(data);
+        if (keys.length === 0) return '<span class="rmp-empty">— (空)</span>';
+        const rows = keys
+          .map((k) => {
+            const niceKey = this._prettyFieldName(k);
+            return (
+              `<div class="rmp-field">` +
+              `<div class="rmp-key" title="${this._escHtml(k)}">${this._escHtml(niceKey)}</div>` +
+              `<div class="rmp-val">${this.renderPretty(data[k], depth + 1)}</div>` +
+              `</div>`
+            );
+          })
+          .join("");
+        const cls = depth === 0 ? "rmp-obj rmp-obj-root" : "rmp-obj rmp-obj-nested";
+        return `<div class="${cls}">${rows}</div>`;
+      }
+      return `<span>${this._escHtml(String(data))}</span>`;
+    },
+
     async regenCurrentPhase() {
       const action = this.activeReviewRegenAction();
       if (!action) {
@@ -966,6 +1100,10 @@ function app() {
           this.flash = `↺ 已回滚到${this._groupNameOf(this.currentGroupId)}阶段完成时的状态`;
           this.actedGroups = { ...this.actedGroups, [this.currentGroupId]: "rolled_back" };
           this.error = "";
+          // 用户已明确点「取消应用」=丢弃所有审核期编辑——先清 hasEdits 避免
+          // load(section) 里的 "本模块有未保存的编辑，切换会丢失" confirm 弹窗
+          // 拦截 reload，让前端真的拿到回滚后的内容
+          this.hasEdits = false;
           // 刷所有可能被改的东西
           await this.refreshState();
           await this.refreshPhaseGroups();

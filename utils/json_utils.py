@@ -197,8 +197,24 @@ def request_json_with_profile(
     与 request_json 的区别：
       - 走 llm.chat_with_profile（用指定 profile_id + 独立 API key）
       - 默认 empty_ok=True, max_retries=3（审核失败不该阻断主流程）
+
+    **自动 fallback**：profile_id 是 usage 名（如 "extractor" / "reviewer"）但
+    没有任何 user_model 勾了这个 usage 时，自动改用 main——避免 hard fail。
     """
     from llm_layer.llm import chat_with_profile
+    from llm_layer import user_models as _um
+    from llm_layer import llm_profiles as _lp
+
+    # 自动 fallback：profile_id 既不是 user_model id、也不是内置 PROFILES id、
+    # 也不是任何 user_model 的 usage 标签时，改用 main（避免硬错"未注册的 profile"）
+    resolved_id = profile_id
+    if not _um.get(profile_id, include_key=False) and profile_id not in _lp.PROFILES:
+        if not _um.find_by_usage(profile_id):
+            main_um = _um.find_by_usage("main")
+            if main_um:
+                print(f"  ℹ [{agent_name or 'agent'}] profile '{profile_id}' 未配置，自动 fallback 到 main "
+                      f"({main_um.get('id')})")
+                resolved_id = main_um["id"]
 
     last_err = ""
     last_raw = ""
@@ -220,7 +236,7 @@ def request_json_with_profile(
 
         try:
             raw = chat_with_profile(
-                profile_id,
+                resolved_id,
                 [{"role": "system", "content": system},
                  {"role": "user", "content": prompt}],
                 temperature=cur_temp,

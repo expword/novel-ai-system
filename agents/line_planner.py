@@ -74,7 +74,10 @@ def _plan_global_by_type(state: NovelState, line_type: str, count: int, desc_hin
     # Phase 2.1:thread-local user_feedback 注入
     from utils.feedback_helper import get_user_feedback_prefix
     feedback_prefix = get_user_feedback_prefix()
-    prompt = f"""{feedback_prefix}
+    # 用户创作意图（tone_summary / avoid_tropes_hints）
+    from utils.intent_helper import build_intent_brief
+    intent_brief = build_intent_brief(state, "line_planner")
+    prompt = f"""{feedback_prefix}{intent_brief}
 为《{state.title}》规划贯穿全书的【{line_type}】({count} 条)。
 
 全书共 {len(state.volumes)} 卷,{total_chapters} 章。
@@ -162,7 +165,10 @@ def plan_volume_lines(state: NovelState, volume_index: int) -> None:
         for c in active_chars
     )
 
-    prompt = f"""
+    from utils.intent_helper import build_intent_brief
+    intent_brief = build_intent_brief(state, "line_planner")
+
+    prompt = f"""{intent_brief}
 请为第{volume_index}卷《{vol.title}》规划卷内专属叙事线。
 
 卷章节范围：第{vol.chapter_start}-{vol.chapter_end}章（共{vol.total_chapters}章）
@@ -260,6 +266,10 @@ def plan_all_volume_lines_parallel(state: NovelState) -> None:
 
     print(f"  并发为 {len(vol_indexes)} 卷规划卷内叙事线（max_workers={PARALLEL_WORKERS}）...")
 
+    # 用户创作意图——闭包捕获，所有并发卷共享同一份
+    from utils.intent_helper import build_intent_brief
+    intent_brief = build_intent_brief(state, "line_planner")
+
     def _one_volume(vi: int) -> tuple[int, list]:
         """只跑 LLM + parse，不写 state——返回 (vi, parsed_lines)。"""
         vol = state.get_volume(vi)
@@ -277,7 +287,7 @@ def plan_all_volume_lines_parallel(state: NovelState) -> None:
             f"- {c.name}：{c.volume_arcs.get(vi, '保持前卷状态')}"
             for c in active_chars
         )
-        prompt = f"""
+        prompt = f"""{intent_brief}
 请为第{vi}卷《{vol.title}》规划卷内专属叙事线。
 
 卷章节范围：第{vol.chapter_start}-{vol.chapter_end}章（共{vol.total_chapters}章）

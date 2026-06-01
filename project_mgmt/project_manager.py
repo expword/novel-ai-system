@@ -14,6 +14,7 @@ import time
 import signal
 import shutil
 import subprocess
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -44,8 +45,14 @@ def list_projects() -> list[dict]:
 
 def create(project_id: str, title: str, genre: str = "玄幻",
            theme: str = "", intent_description: str = "",
-           num_volumes: int = 6) -> dict:
-    """新建项目——建目录结构 + 写 meta.json + 初始化空 state.json。"""
+           num_volumes: int = 6,
+           reality_basis: str = "", historical_setting: str = "",
+           real_persons: list[str] | None = None) -> dict:
+    """新建项目——建目录结构 + 写 meta.json + 初始化空 state.json。
+
+    reality_basis / historical_setting / real_persons 由前端"⓪ 故事根基"问答
+    传入，会写到初始 state.creative_intent 上，作为下游 IntentAnalyzer 的预填约束。
+    """
     project_id = _sanitize_id(project_id)
     root = f"{PROJECTS_ROOT}/{project_id}"
     if os.path.exists(root):
@@ -60,6 +67,9 @@ def create(project_id: str, title: str, genre: str = "玄幻",
         "theme": theme,
         "intent_description": intent_description,
         "num_volumes": num_volumes,
+        "reality_basis": reality_basis or "",
+        "historical_setting": historical_setting or "",
+        "real_persons": list(real_persons or []),
         "created_at": datetime.now().isoformat(),
     }
     with open(pctx.meta_file(project_id), "w", encoding="utf-8") as f:
@@ -83,10 +93,18 @@ def _init_state(project_id: str, meta: dict):
             genre=meta.get("genre", ""),
             theme=meta.get("theme", ""),
         )
-        if meta.get("intent_description"):
+        rb = (meta.get("reality_basis") or "").strip()
+        hs = (meta.get("historical_setting") or "").strip()
+        rp = list(meta.get("real_persons") or [])
+        if meta.get("intent_description") or rb:
             state.creative_intent = CreativeIntent(
-                raw_description=meta["intent_description"],
+                raw_description=meta.get("intent_description", "") or "",
                 analyzed=False,
+                reality_basis=rb,
+                historical_setting=hs,
+                real_persons=rp,
+                # respect_real_figures：真实模式 + 有人物名单 → 自动开启
+                respect_real_figures=(rb in {"real_history", "real_adapted"} and len(rp) > 0),
             )
         save_state(state)
     finally:
@@ -274,6 +292,13 @@ def start(project_id: str) -> int:
     env = os.environ.copy()
     env["XIAOSHUO_PROJECT_ID"] = project_id
     env["PYTHONIOENCODING"] = "utf-8"
+    if sys.platform == "win32":
+        dll_dirs = [
+            os.path.join(sys.prefix, "Library", "bin"),
+            os.path.join(sys.prefix, "DLLs"),
+        ]
+        existing_path = env.get("PATH", "")
+        env["PATH"] = os.pathsep.join([p for p in dll_dirs if os.path.isdir(p)] + [existing_path])
 
     log_path = pctx.log_file(project_id)
     # append 模式，保留历史日志
@@ -390,10 +415,27 @@ def _write_pid_record(project_id: str, pid: int) -> None:
     pf = pctx.pid_file(project_id)
     os.makedirs(os.path.dirname(pf), exist_ok=True)
     record = {"pid": pid, "create_time": _proc_create_time(pid)}
-    tmp = pf + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(record, f)
-    os.replace(tmp, pf)
+    # Windows may keep a stale fixed "running.pid.tmp" locked after an
+    # interrupted start. Use a unique temp file so a bad leftover cannot block
+    # future launches.
+    tmp = f"{pf}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(record, f)
+        try:
+            os.replace(tmp, pf)
+        except PermissionError:
+            # Some Windows ACL setups allow creating files but deny replacing
+            # them. PID files are tiny control records, so fall back to a
+            # direct write instead of blocking project startup.
+            with open(pf, "w") as f:
+                json.dump(record, f)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _remove_flag(path: str):

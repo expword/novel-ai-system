@@ -363,6 +363,123 @@ writer prompt 里硬约束：
 - 调试简单（看 state 字段在哪个 phase 被填）
 - 并发安全（不同 agent 写不同字段，scheduler 控制依赖）
 
+### D8. agent 形式契约（AgentContract）
+
+D7 让 agent 边界靠 state 解耦，但**每个 agent 实际读哪些字段、写哪些、产出该满足什么不变式**全靠程序员记得——这曾经是漏 bug 的源头（如 `volume_planner` 漏读 `power_system.special_abilities` 导致 outline.goal 写出"通过真 AI 查询本书设定"违规模式；`web._replace_power_system` 漏写 `lifecycle_nodes` 导致静默清零）。
+
+`utils/agent_contract.py` 提供 `AgentContract` dataclass 让模块自我描述：
+
+```python
+from utils.agent_contract import AgentContract, register
+
+CONTRACT = register(AgentContract(
+    name="my_agent.main_function",
+    inputs=[                              # state 路径，[*] 表示列表元素
+        "world_canon.dynasty_name",
+        "power_system.special_abilities",
+        "factions[*].name",
+    ],
+    outputs=["volumes[*].chapter_outlines"],
+    invariants=[                          # callable: state -> list[Issue]
+        lambda state: my_check(state),
+    ],
+    notes="生成前会自动调 extract_world_canon...",
+))
+```
+
+`validate_contract(CONTRACT, state)` 跑 inputs 就绪检查 + invariants 校验，返回 issues。`surface_contract_issues(issues, source)` 把违规推到 `progress_status.json warnings`（D9）。
+
+参考实现：`agents/volume_planner.py` / `agents/ability_planner.py` / `agents/writer.py` 顶部。
+
+**渐进式落地**：当前只有 3 个核心 agent 声明了契约，其余 agent 按需逐个补——纯文档化也有价值（看代码顶部就能知道 agent 边界，不必读 300 行）。
+
+### D11. 能力体系完整生命周期（asset + character ability）
+
+四个 agent 形成闭环——asset/能力**不再是 Phase 2C 一锤定音的封闭集合**：
+
+```
+Phase -1.5  intent_asset_extractor          从用户 intent_description 主动抽 asset
+                                            （两步：列名 → 每 asset 独立深化，可并发）
+                                            写入 state.power_system.special_abilities
+                                            描述含 [intent_declared] 标记 + functional_limits
+                                            + usage_cost + ceiling_at_intro + growth_hints
+                                            + signature_use_modes
+                ↓
+Phase 2A3   character_ability_designer      为主角 + 主要配角 + 反派生成
+                                            CharacterAbilityProfile（含 learned_abilities）
+                                            两步：每角色列名 → 每 (角色 × 能力) 独立深化
+                                            写入 state.character_ability_profiles
+                ↓
+写章前       writer prompt _format_character_ability_block
+                                            按 chapter_index 过滤——只列本章前已学的能力
+                                            告诉 writer "X 当前能/不能 Y"
+                ↓
+写章后       chapter_asset_tracker          扫正文识别新 asset 候选（纯规则，无 LLM）
+                                            连续 N 章出现 → progress_warning 提示登记
+            power_timeline_tracker          LLM 扫正文识别"谁用了什么能力"事件
+                                            写入 state.power_events 时间线
+                                            更新 learned_ability.use_count/last_used_chapter
+                                            未登记 (user, ability) → progress_warning
+            validate_power_consistency      跨章一致性：用了未登记能力 → critical
+                                            → progress_warning + canon-revise 兜底
+```
+
+**关键设计原则**：
+- 每个 asset / (角色 × 能力) **独立 LLM 调用**——独享上下文注意力（避免一次性多 asset 互相干扰、潦草）
+- 走 `extractor` usage 路由——轻量便宜模型；没绑 fallback 到 main
+- 累积契约：先登记的能力不可被后续推翻；新 ability 必须显式 promote 入 profile
+- canon_checker.validate_text + power_consistency invariant 双层防御
+
+参考：
+- `agents/intent_asset_extractor.py`
+- `agents/character_ability_designer.py`
+- `agents/chapter_asset_tracker.py`
+- `agents/power_timeline_tracker.py`
+- writer.py:_format_character_ability_block
+
+### D10. audit-revise 通用框架（core/revise_loop.py）
+
+5 条 revise 路径（canon / sensitive / polisher / reader / dialogue）的"audit → 拼
+feedback → revise → 长度兜底 → 写盘 → 重审 → 多轮控制"共性已抽象为
+`core/revise_loop.py:run_revise_loop`。新加 revise 路径用声明式 `ReviseConfig`：
+
+```python
+cfg = ReviseConfig(
+    label="my-revise",
+    audit_fn=audit_fn,                       # (state, ch, text) → audit_result
+    needs_revise=lambda a: a.score < 7,      # 触发条件
+    feedback_builder=lambda a, rnd: ...,     # audit → feedback
+    revise_fn=revise_chapter,
+    max_rounds=3,
+    max_short_streak=2,                      # 连续过短退出
+    on_round_done=...,
+    on_residual_critical=...,                # 跑满残留时回调
+    chapter_path=path,                       # 自动写盘 + 字数同步
+)
+result = run_revise_loop(state=state, chapter_index=ci, directive=d,
+                           config=cfg, initial_text=text)
+```
+
+测试在 `tests/test_revise_loop.py`。已切到框架：canon-revise / sensitive-revise。
+polisher / reader-revise / dialogue-revise 通过 `_apply_revision_and_reaudit`
+helper 间接走（max_rounds=1 简化形式）。
+
+### D9. 错误可见性 / progress_warning 通道
+
+所有 try/except 兜底点——若涉及主流程外的子系统失败（LLM 池熔断、agent 校验失败、占位替换异常、canon 修订残留、下游 staleness 等），都要走 `persistence.checkpoint.add_progress_warning(level, source, message)` 写到 `progress_status.json` 的 `warnings` 数组，前端 ⚠ 徽章自动显示。
+
+`print` 保留作 debug 细节来源，但**不能作为唯一通道**——用户跑 web UI 时 stdout 重定向到子进程 log 文件，不主动翻看不见。
+
+source 命名规范（同 source 自动去重）：
+- `phase:1E` / `phase:3A` 阶段级
+- `chapter:N:canon` / `chapter:N:ai_meta` 章级审计
+- `outline:V{vol}Ch{ch}.goal` outline 校验
+- `llm:circuit_breaker` LLM 熔断
+- `staleness:{section}:outlines` 编辑下游失效
+- `contract:{agent_name}` agent 契约校验
+
+恢复后调 `clear_progress_warnings(source=...)` 清掉。
+
 ---
 
 ## 扩展指南
@@ -370,10 +487,11 @@ writer prompt 里硬约束：
 ### 加一个新 agent
 
 1. 在 `agents/` 加 `your_agent.py`，导出主函数 `your_function(state, ...)`
-2. 决定它输出到 state 哪个字段（在 `state.py` 加新字段，或扩展已有字段）
-3. 修 `checkpoint.py` 加对应 `_load_xxx` 反序列化函数（**勿漏**——旧 state.json 不会自动有这字段）
-4. 在 `scheduler_tasks.py` 加 Task 注册，写 `depends_on`
-5. 在 `director.py` 的 stepwise fallback 块加一段调用（auto 模式靠 scheduler 自动跑）
+2. **顶部声明 `CONTRACT`**（见下方 D8）——这是模块边界的形式化文档
+3. 决定它输出到 state 哪个字段（在 `state.py` 加新字段，或扩展已有字段）
+4. 修 `checkpoint.py` 加对应 `_load_xxx` 反序列化函数（**勿漏**——旧 state.json 不会自动有这字段）
+5. 在 `scheduler_tasks.py` 加 Task 注册，写 `depends_on`
+6. 在 `director.py` 的 stepwise fallback 块加一段调用（auto 模式靠 scheduler 自动跑）
 
 ### 加一种新的章后审计
 
@@ -394,14 +512,25 @@ writer prompt 里硬约束：
 
 ## 测试
 
-当前项目**没有完整测试套件**——这是已知不足。建议添加：
+`tests/` 用 stdlib `unittest` —— 不引入新依赖。
 
-```
-tests/
-├─ test_agents/       # 每个 agent 一个测试，mock LLM 验证 prompt → JSON 解析
-├─ test_state/        # state 字段读写 / 序列化往返
-├─ test_director/     # director 流程（mock agents）
-└─ test_cleanup/      # chapter_cleanup 18 类数据清理验证
+```bash
+python -m unittest discover tests           # 跑全部
+python -m unittest tests.test_revise_loop -v # 跑单个
 ```
 
-欢迎贡献。
+当前覆盖（40 个 test，0.1s 全过）：
+
+| 文件 | 覆盖模块 |
+|---|---|
+| `test_canon_checker.py` | `agents/canon_checker.py` 4 类规则 + 向后兼容包装 |
+| `test_revise_loop.py` | `core/revise_loop.py` 5 种退出路径 |
+| `test_agent_contract.py` | `utils/agent_contract.py` get_path / 校验 / 注册表 |
+| `test_world_canon_extractor.py` | hash 幂等 / 空文本跳过 |
+| `test_downstream_staleness.py` | 合规/违规扫描 / section 过滤 |
+
+设计原则：不发真 LLM 调用 / 不依赖项目数据（`tests/_helpers.py:make_minimal_state`
+按 [[feedback_generic_prompts]] 避项目术语）。详见 `tests/README.md`。
+
+后续重构（director / state / checkpoint 三块巨石）参考 `docs/REFACTOR_ROADMAP.md`。
+建议每新加一个核心模块同步加 `tests/test_<module>.py`。

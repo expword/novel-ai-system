@@ -18,13 +18,30 @@
   updated_at   ISO 时间戳
 
 用途（usage）约定（一条记录可勾选多个，组合自由）：
-  "main"      — 主 LLM（writer/规划 agents 用它）
-  "reviewer"  — 章节合规审核（setup_reviewer 用）
-  "fallback"  — 备用：主调用 120s 超时或失败时自动改用此模型重试
-  其他自定义  — 预留给未来扩展（按字符串字面匹配）
-
-叙事内 AI（如主角带的"豆包"）不通过 usage 路由——见 agents/external_ai_query.py：
-  state.power_system.special_abilities[].external_llm_profile 直接绑 user_model id。
+  "main"        — **主写作模型**（writer 写章正文 / 扩写 / 改写 · 长文本 + 文笔要求高）
+  "planner"     — **规划模型**（chapter_planner / line_planner / ability_planner /
+                  twist_designer / character_designer 等所有"先想后写"的结构化规划 agent）
+                  需求：严格 JSON + 推理能力 + 中等上下文。可以用比 main 更便宜的模型，
+                  也可以反过来用比 main 更强的（让规划更智能、写作放轻量便宜）。没绑
+                  fallback main。
+  "reviewer"    — 章节合规审核（setup_reviewer 用）
+  "fallback"    — 备用：主调用 120s 超时或失败时自动改用此模型重试
+  "in_story_ai" — **可作为 in-story 真 AI**（如主角金手指 AI 助手）被
+                  state.power_system.special_abilities[].external_llm_profile 绑定。
+                  勾选此 usage 的 profile 会出现在 SpecialAbility 编辑界面的下拉框里。
+                  agents/external_ai_query.py 会附加 in-story system prompt 让 AI
+                  扮演 in-story 角色（不暴露真实模型身份 / 不用现代品牌话术）。
+  "extractor"   — **结构化提取/生成专用模型**。从大段自然语言抽锚点
+                  （朝代/角色/asset 声明等）写回 state 结构化字段的任务，
+                  跟"长文本创作"模型需求完全不同——
+                    · 短输入 → 短 JSON 输出
+                    · 严格 schema 遵循 + 高精度
+                    · 不需要文笔
+                  适合绑轻量便宜模型（如 claude-haiku / gemini-flash）。
+                  用 agent: world_canon_extractor / intent_asset_extractor /
+                  chapter_asset_tracker / 等结构化抽取 agent。
+                  没绑 → 自动 fallback 到 main（向后兼容，但成本高）。
+  其他自定义    — 预留给未来扩展（按字符串字面匹配）
 
 兼容性：老数据 usage 是字符串，读取时自动归一化为 list；下次保存时写回 list 形态。
 
@@ -39,13 +56,24 @@ import os
 import json
 import re
 import threading
+import time
 from datetime import datetime
 from typing import Optional
 
 # 固定在仓库根（无论从哪里 import）
 _THIS_FILE = os.path.abspath(__file__)
-_REPO_ROOT = os.path.dirname(_THIS_FILE)
+_REPO_ROOT = os.path.dirname(os.path.dirname(_THIS_FILE))
 STORAGE_PATH = os.path.join(_REPO_ROOT, "user_models.json")
+
+# 历史 bug 防御——曾经路径解析只 dirname 一次，写到 llm_layer/user_models.json，
+# 用户后续看到两份文件混乱。模块 import 时检测旧路径若有残留文件，写醒目 warn。
+_GHOST_PATH = os.path.join(os.path.dirname(_THIS_FILE), "user_models.json")
+if os.path.exists(_GHOST_PATH) and _GHOST_PATH != STORAGE_PATH:
+    print("=" * 70)
+    print(f"⚠ user_models.py: 检测到幽灵副本 {_GHOST_PATH}")
+    print(f"  当前实际使用的是 {STORAGE_PATH}")
+    print(f"  旧文件可能含用户老配置——请手工 merge 后删除，避免混淆")
+    print("=" * 70)
 
 # 内存锁——多线程写同一文件
 _lock = threading.Lock()
@@ -130,7 +158,30 @@ def _save_raw(data: dict) -> None:
         tmp = STORAGE_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, STORAGE_PATH)
+        last_err = None
+        for attempt in range(8):
+            try:
+                os.replace(tmp, STORAGE_PATH)
+                return
+            except PermissionError as e:
+                # Windows 上浏览器/杀毒/另一个 Python 进程偶发短暂占用目标文件，
+                # os.replace 会报 WinError 5。给它一点时间再替换。
+                last_err = e
+                time.sleep(0.05 * (attempt + 1))
+        try:
+            # 兜底：如果 rename 一直被拒，但普通写入允许，就直接覆盖目标文件。
+            # 这比让 Web 保存 500 更可恢复；tmp 保留/删除都不影响下一次保存。
+            with open(STORAGE_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return
+        except OSError:
+            if last_err:
+                raise last_err
+            raise
 
 
 # ═══════════════════════════════════════════════════════
@@ -207,6 +258,17 @@ def add(model: dict) -> dict:
         "created_at": now,
         "updated_at": now,
     }
+    # UNIQUE_USAGES 自动互斥（同 update）
+    my_unique = set(usage_list) & UNIQUE_USAGES
+    if my_unique:
+        for other in data["models"]:
+            other_usage = other.get("usage") or []
+            stripped = [u for u in other_usage if u not in my_unique]
+            if stripped != other_usage:
+                print(f"  [i] unique usage 互斥：从 {other.get('id')} 移除 "
+                      f"{sorted(my_unique & set(other_usage))}（让位给 {mid}）")
+                other["usage"] = stripped
+                other["updated_at"] = now
     data["models"].append(entry)
     _save_raw(data)
     return entry
@@ -217,6 +279,10 @@ def update(model_id: str, patch: dict) -> dict:
     更新某条。patch 里可以只含部分字段。不能改 id。
     如果 api_key 字段缺失或为空字符串，保留原 key（允许用户编辑时不必重填 key）。
     usage 字段如有传入，归一化为 list；省略则保留原值。
+
+    **UNIQUE_USAGES (main/reviewer/extractor) 自动互斥**：
+    本 model 勾上某 unique usage 后，自动从其他 model 移除同 usage——
+    防止 first-hit 静默冲突。
     """
     data = _load_raw()
     for m in data["models"]:
@@ -227,6 +293,19 @@ def update(model_id: str, patch: dict) -> dict:
                     m[k] = str(patch[k]).strip()
             if "usage" in patch and patch["usage"] is not None:
                 m["usage"] = _normalize_usage(patch["usage"])
+                # ── UNIQUE_USAGES 自动互斥：把本 model 上的 unique usage 从其他 model 清掉 ──
+                my_unique = set(m["usage"]) & UNIQUE_USAGES
+                if my_unique:
+                    for other in data["models"]:
+                        if other.get("id") == model_id:
+                            continue
+                        other_usage = other.get("usage") or []
+                        stripped = [u for u in other_usage if u not in my_unique]
+                        if stripped != other_usage:
+                            print(f"  [i] unique usage 互斥：从 {other.get('id')} 移除 "
+                                  f"{sorted(my_unique & set(other_usage))}（让位给 {model_id}）")
+                            other["usage"] = stripped
+                            other["updated_at"] = datetime.now().isoformat(timespec="seconds")
             if "api_key" in patch and patch["api_key"] and str(patch["api_key"]).strip():
                 m["api_key"] = str(patch["api_key"]).strip()
             m["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -255,6 +334,9 @@ def find_by_usage(usage: str) -> Optional[dict]:
     找第一条 usage 列表里包含指定标签的模型（含 key）。
     例：一条记录 usage=["main", "reviewer"] 会同时被 find_by_usage("main")
     和 find_by_usage("reviewer") 命中。
+
+    ⚠ first-hit 匹配——多个 profile 勾同一 usage 时，按文件物理顺序选最先出现的。
+    用 active_usage_map() 看实际生效；用 detect_usage_conflicts() 检测多占问题。
     """
     for m in _load_raw().get("models", []):
         if usage in m.get("usage", []):
@@ -262,15 +344,91 @@ def find_by_usage(usage: str) -> Optional[dict]:
     return None
 
 
+# 这些 usage 是"应该唯一"的——多 profile 同时占用会导致 first-hit 静默冲突
+# （用户不知道实际生效哪个）。fallback / in_story_ai / custom 允许多占（场景合理）
+UNIQUE_USAGES: set[str] = {"main", "planner", "reviewer", "extractor"}
+
+
+def active_usage_map(include_key: bool = False) -> dict[str, Optional[dict]]:
+    """返回每个内置 usage 当前实际生效的 profile（first-hit）。
+
+    前端用此显示"main 当前生效 = X / reviewer 当前生效 = Y"，避免静默冲突。
+    """
+    return {
+        usage: find_by_usage(usage) if not include_key
+               else find_by_usage(usage)  # 内部已含 key
+        for usage in USAGE_BUILTIN
+    }
+
+
+def detect_usage_conflicts() -> list[dict]:
+    """扫描 UNIQUE_USAGES 是否被多个 profile 同时勾选。
+
+    返回 [{"usage": ..., "active_profile_id": ..., "shadowed_profile_ids": [...]}]
+    供 web 启动 / 编辑后调用，写 progress_warning 提示用户"已勾的不生效，
+    实际生效是另一条"。
+    """
+    out = []
+    for usage in UNIQUE_USAGES:
+        matches = [m for m in _load_raw().get("models", [])
+                    if usage in m.get("usage", [])]
+        if len(matches) > 1:
+            out.append({
+                "usage": usage,
+                "active_profile_id": matches[0]["id"],   # first-hit 实际生效的
+                "shadowed_profile_ids": [m["id"] for m in matches[1:]],  # 被覆盖的
+                "total": len(matches),
+            })
+    return out
+
+
+# ═══════════════════════════════════════════════════════
+#  Usage 词汇表（前端用于渲染复选框 / tooltip）
+# ═══════════════════════════════════════════════════════
+USAGE_BUILTIN: dict[str, str] = {
+    "main":        "主写作模型（writer 写章正文 · 长文本 + 文笔）",
+    "planner":     "规划模型（chapter_planner / line_planner / 等所有'先想后写'的"
+                   "结构化规划 agent · JSON + 推理 + 中等上下文）",
+    "reviewer":    "章节合规审核（setup_reviewer 用）",
+    "fallback":    "备用：主调用失败时改用此模型重试",
+    "in_story_ai": "可作 in-story 真 AI ——主角金手指 AI 助手可绑此 profile",
+    "extractor":   "结构化提取/生成专用 —— world_canon / asset 声明 / intent 解析等"
+                   "短输入短输出 JSON 任务；适合轻量便宜模型（不需要文笔）",
+}
+
+
 def all_usages() -> list[str]:
     """返回所有出现过的 usage 标签（含内置可选项）。"""
-    builtin = {"main", "reviewer", "fallback"}
-    seen = set(builtin)
+    seen = set(USAGE_BUILTIN.keys())
     for m in _load_raw().get("models", []):
         for u in m.get("usage", []):
             if u:
                 seen.add(u)
     return sorted(seen)
+
+
+def usage_descriptions() -> dict[str, str]:
+    """返回所有 usage 标签的可读说明——前端 tooltip 用。
+
+    内置 usage 用 USAGE_BUILTIN 文案；用户自定义 usage 用 'auto:<usage>' 占位。
+    """
+    out = dict(USAGE_BUILTIN)
+    for u in all_usages():
+        out.setdefault(u, f"自定义 usage：{u}")
+    return out
+
+
+def list_in_story_ai_profiles(include_key: bool = False) -> list[dict]:
+    """返回所有勾选了 'in_story_ai' usage 的 profile。
+
+    专给 SpecialAbility 编辑界面的 external_llm_profile 下拉框过滤用——
+    避免用户把不该作 in-story AI 的 profile（如主写作 / 审核员）误选上去。
+    返回结构同 list_all（默认遮挡 api_key）。
+    """
+    return [
+        m for m in list_all(include_key=include_key)
+        if "in_story_ai" in (m.get("usage") or [])
+    ]
 
 
 # ═══════════════════════════════════════════════════════
@@ -285,6 +443,49 @@ def _validate(model: dict, require_key: bool = True) -> None:
         raise ValueError("必填字段缺失：api_key")
     if not model["base_url"].startswith(("http://", "https://")):
         raise ValueError("base_url 必须以 http:// 或 https:// 开头")
+
+
+def test_model_config(model: dict, timeout: float = 25.0) -> dict:
+    """Send one tiny OpenAI-compatible chat request before accepting a web model.
+
+    The result intentionally never includes api_key. The web UI uses this as a
+    hard gate so a structurally valid but unreachable/wrong model is not saved.
+    """
+    _validate(model, require_key=True)
+    try:
+        from openai import OpenAI
+    except Exception as e:
+        raise ValueError(f"模型连通验证失败：OpenAI SDK 不可用：{type(e).__name__}: {e}") from e
+
+    base_url = str(model.get("base_url") or "").strip()
+    api_key = str(model.get("api_key") or "").strip()
+    model_name = str(model.get("model") or "").strip()
+    extra_body = model.get("extra_body") or {}
+
+    started = time.monotonic()
+    client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+    kwargs = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": "Reply with exactly OK."},
+            {"role": "user", "content": "ping"},
+        ],
+        "temperature": 0,
+        "max_tokens": 8,
+    }
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+
+    try:
+        response = client.chat.completions.create(**kwargs)
+        content = (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        raise ValueError(f"模型连通验证失败：{type(e).__name__}: {e}") from e
+
+    latency_ms = int((time.monotonic() - started) * 1000)
+    if not content:
+        raise ValueError("模型连通验证失败：接口返回为空")
+    return {"ok": True, "latency_ms": latency_ms, "preview": content[:80]}
 
 
 def _generate_id(seed: str, existing: set) -> str:

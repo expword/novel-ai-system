@@ -50,6 +50,13 @@ class Task:
     skip_if: Optional[Callable[[NovelState], bool]] = None
 
 
+@dataclass
+class TaskRunResult:
+    status: str
+    elapsed: float = 0.0
+    error: Optional[Exception] = None
+
+
 # ═══════════════════════════════════════════════════════
 #  TaskScheduler
 # ═══════════════════════════════════════════════════════
@@ -122,6 +129,13 @@ class TaskScheduler:
             for t in wave_tasks:
                 print(f"  · [{t.id}] {t.phase} — {t.agent_name}")
 
+            # hook 可能写 progress_status 或检查控制信号，必须在主线程顺序执行。
+            # worker 只跑业务函数并返回结果，避免多线程同时写 checkpoint/progress。
+            for task in wave_tasks:
+                if self.on_task_start:
+                    try: self.on_task_start(task)
+                    except Exception: pass
+
             # 并发执行本波——parallel_map 底层用 ThreadPoolExecutor
             # 每个 worker 最终落到 LLM 调用时会走 llm_pool（已有速率/熔断控制）
             results = parallel_map(
@@ -133,52 +147,53 @@ class TaskScheduler:
 
             # 收集结果——哪些 done / failed / skipped
             for task, res in zip(wave_tasks, results):
-                status = res or "failed"
+                if res is None:
+                    res = TaskRunResult(status="failed")
+                status = res.status
+                if status == "done":
+                    if self.on_task_success:
+                        try: self.on_task_success(task, res.elapsed)
+                        except Exception: pass
+                elif status == "skipped":
+                    if self.on_task_skipped:
+                        try: self.on_task_skipped(task)
+                        except Exception: pass
+                else:
+                    err = res.error or RuntimeError(f"Task {task.id} failed")
+                    if self.on_task_failure:
+                        try: self.on_task_failure(task, err, res.elapsed)
+                        except Exception: pass
+                    if task.critical:
+                        raise err
                 outcome[task.id] = status
                 if status in ("done", "skipped", "failed"):
                     # failed 非 critical 时也标 done——让依赖它的任务能继续跑
-                    # critical 失败已在 _run_one 里 raise 了
+                    # critical 失败已在主线程 raise 了
                     done.add(task.id)
                 pending.discard(task.id)
 
         return outcome
 
-    def _run_one(self, task: Task, state: NovelState) -> str:
-        """执行单个任务。返回 'done' / 'skipped' / 'failed'。"""
+    def _run_one(self, task: Task, state: NovelState) -> TaskRunResult:
+        """执行单个任务。worker 不触发 hook，不写 progress/state。"""
         # 可选：skip_if 条件判断
         if task.skip_if is not None:
             try:
                 if task.skip_if(state):
-                    if self.on_task_skipped:
-                        try: self.on_task_skipped(task)
-                        except Exception: pass
-                    return "skipped"
+                    return TaskRunResult(status="skipped")
             except Exception:
                 pass  # skip_if 出错就当没 skip
-
-        if self.on_task_start:
-            try: self.on_task_start(task)
-            except Exception: pass
 
         t0 = time.monotonic()
         try:
             task.fn(state)
             elapsed = time.monotonic() - t0
-            if self.on_task_success:
-                try: self.on_task_success(task, elapsed)
-                except Exception: pass
-            return "done"
+            return TaskRunResult(status="done", elapsed=elapsed)
         except Exception as e:
             elapsed = time.monotonic() - t0
             print(f"  ✗ [{task.id}] 失败（{elapsed:.1f}s）：{type(e).__name__}: {e}")
             traceback.print_exc()
-            if self.on_task_failure:
-                try: self.on_task_failure(task, e, elapsed)
-                except Exception: pass
-            if task.critical:
-                # critical 任务失败直接抛，终止整个流水线
-                raise
-            return "failed"
+            return TaskRunResult(status="failed", elapsed=elapsed, error=e)
 
 
 # ═══════════════════════════════════════════════════════

@@ -60,6 +60,38 @@ class ReviseConfig:
     update_word_count: bool = True
 
 
+# ═══════════════════════════════════════════════════════
+#  P0-2: 跨 audit revise 总上限 (防 9 轮叠加把个性稀释)
+# ═══════════════════════════════════════════════════════
+# 单章跨 critic/setup/canon/reader/dialogue/polisher/sensitive 累计接受的 revise 轮数上限
+# 超过此上限,后续 revise 路径 short-circuit (强制收稿,防 LLM 反复"修平")
+MAX_TOTAL_REVISE_ROUNDS_PER_CHAPTER = 5
+
+
+def get_total_rounds_used(directive: Any) -> int:
+    """读 directive 已用的跨 audit revise 总轮数。"""
+    return int(getattr(directive, "_total_revise_rounds", 0) or 0)
+
+
+def add_total_rounds_used(directive: Any, n: int) -> None:
+    """累加跨 audit revise 总轮数到 directive。
+
+    directive 每章重生成,所以这个计数器天然是"每章独立"的。
+    """
+    if n <= 0:
+        return
+    try:
+        cur = get_total_rounds_used(directive)
+        directive._total_revise_rounds = cur + n
+    except Exception:
+        pass
+
+
+def is_total_cap_exceeded(directive: Any) -> bool:
+    """是否已达上限——其他 revise 路径(critic loop / 各类 audit)可调用此检查决定是否跳过。"""
+    return get_total_rounds_used(directive) >= MAX_TOTAL_REVISE_ROUNDS_PER_CHAPTER
+
+
 @dataclass
 class ReviseResult:
     """循环结束后的状态摘要——调用方据此决定后续动作。"""
@@ -68,7 +100,7 @@ class ReviseResult:
     rounds_accepted: int = 0
     last_audit: Any = None
     residual_needs_revise: bool = False
-    exit_reason: str = ""  # "clean" / "max_rounds" / "short_streak" / "no_initial_revise_needed"
+    exit_reason: str = ""  # "clean" / "max_rounds" / "short_streak" / "no_initial_revise_needed" / "total_cap_exceeded"
 
 
 def run_revise_loop(
@@ -86,6 +118,32 @@ def run_revise_loop(
     """
     text = initial_text
     audit = initial_audit
+
+    # P0-2: 跨 audit 总上限保护——已达上限直接返回原稿,防 LLM 多 audit 叠加修平
+    if is_total_cap_exceeded(directive):
+        if audit is None:
+            try:
+                audit = config.audit_fn(state, chapter_index, text)
+            except Exception:
+                audit = None
+        try:
+            from persistence.checkpoint import add_progress_warning
+            add_progress_warning(
+                level="info",
+                source=f"chapter:{chapter_index}:revise_cap",
+                message=(
+                    f"{config.label} 跳过:本章 revise 总轮数已达上限 "
+                    f"{MAX_TOTAL_REVISE_ROUNDS_PER_CHAPTER} (防个性稀释)"
+                ),
+            )
+        except Exception:
+            pass
+        return ReviseResult(
+            final_text=text, rounds_run=0, rounds_accepted=0,
+            last_audit=audit, residual_needs_revise=False,
+            exit_reason="total_cap_exceeded",
+        )
+
     if audit is None:
         audit = config.audit_fn(state, chapter_index, text)
 
@@ -102,6 +160,10 @@ def run_revise_loop(
     exit_reason = "max_rounds"
 
     for round_idx in range(1, config.max_rounds + 1):
+        # P0-2: 每轮入口再检查一次总上限——同一 audit 内多轮也受限
+        if is_total_cap_exceeded(directive):
+            exit_reason = "total_cap_exceeded"
+            break
         rounds_run = round_idx
         fb = config.feedback_builder(audit, round_idx)
         new_text = config.revise_fn(state, directive, text, fb)
@@ -160,6 +222,9 @@ def run_revise_loop(
             config.on_residual_critical(audit)
         except Exception:
             pass
+
+    # P0-2: 累加跨 audit 总轮数(只算接受的,丢弃过短的轮不算)
+    add_total_rounds_used(directive, rounds_accepted)
 
     return ReviseResult(
         final_text=text, rounds_run=rounds_run, rounds_accepted=rounds_accepted,

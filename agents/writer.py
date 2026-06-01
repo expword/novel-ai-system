@@ -217,8 +217,12 @@ def _write_one_scene(state, directive, beat, system, prev_tail,
     context = build_writer_context(state, directive)
     ability_plan_block = _format_ability_plan(directive)
     callback_seeds_block = _format_callback_seeds_block(directive)
+    # ★ DirectiveConsolidator 合并的「北极星」brief(directive.consolidated_brief)
+    # 优先级最高——放在所有其他块顶部
+    consolidated_brief_block = (getattr(directive, "consolidated_brief", "") or "").strip()
     external_ai_block = "\n".join(
         x for x in (
+            consolidated_brief_block,
             _format_reality_basis_constraint(state),
             _format_external_ai_constraint(state),
             _format_priority_contract(directive),
@@ -231,7 +235,9 @@ def _write_one_scene(state, directive, beat, system, prev_tail,
     expression_line = f"本幕情绪/表达：{beat.expression}" if beat.expression else ""
 
     # 本幕出场角色的 voice card（让对话一落笔就像对的人）
-    voice_cards_block = _format_voice_cards_for_scene(state, beat.characters or [])
+    voice_cards_block = _format_voice_cards_for_scene(
+        state, beat.characters or [], chapter_index=directive.chapter_index,
+    )
 
     # 本幕对白/感官/戏剧节拍锚点（P4：让 writer 不再"自由编剧"）
     anchors_block = _format_beat_anchors(beat)
@@ -272,10 +278,47 @@ def _write_one_scene(state, directive, beat, system, prev_tail,
                 f"开篇直接承接上一章末尾的具体画面/动作——不要另起炉灶，不要概括过渡；从上章最后那个镜头继续。"
             )
         else:
-            opening_instr = (
-                f"请以\"第{directive.chapter_index}章 标题\"作为开头（自拟标题——但**必须避开【本章禁止出现的内容】里列出的近 N 章已用过的标题指纹**：换不同前缀、不同句式骨架）。"
-                f"开篇直接承接上一章末尾的具体画面/动作——不要另起炉灶，不要概括过渡；从上章最后那个镜头继续。"
-            )
+            # 无 outline title — 先让 ChapterTitleGenerator 专项 LLM 给一个网文风标题
+            # 失败/空 → 兜底让 writer 自拟（原行为）
+            generated_title = ""
+            try:
+                from agents.chapter_title_generator import generate_title as _gen_title
+                recent_titles = []
+                try:
+                    for s in (state.completed_chapters or [])[-5:]:
+                        if s and s.title:
+                            recent_titles.append(s.title)
+                except Exception:
+                    pass
+                vol_theme = ""
+                try:
+                    _v = state.get_volume(directive.volume_index)
+                    if _v:
+                        vol_theme = (getattr(_v, "theme", "") or "")[:80]
+                except Exception:
+                    pass
+                generated_title = _gen_title(
+                    state, directive.chapter_index,
+                    chapter_goal=(directive.must_include or [""])[0][:120] if directive.must_include else "",
+                    closing_hook=(beat.purpose if (beat and is_last) else ""),
+                    chapter_type=directive.chapter_type or "",
+                    structure_role=directive.structure_role or "",
+                    volume_theme=vol_theme,
+                    avoid_titles=recent_titles,
+                )
+            except Exception as _e:
+                generated_title = ""
+            if generated_title:
+                opening_instr = (
+                    f"请以\"第{directive.chapter_index}章 {generated_title}\"作为开头（标题已由独立标题生成器设计——优先使用此标题；"
+                    f"如你认为不贴章意可在正文末尾另起一行加 [建议改标题: <新标题>]，但本章正文必须用此标题）。"
+                    f"开篇直接承接上一章末尾的具体画面/动作——不要另起炉灶，不要概括过渡；从上章最后那个镜头继续。"
+                )
+            else:
+                opening_instr = (
+                    f"请以\"第{directive.chapter_index}章 标题\"作为开头（自拟标题——但**必须避开【本章禁止出现的内容】里列出的近 N 章已用过的标题指纹**：换不同前缀、不同句式骨架）。"
+                    f"开篇直接承接上一章末尾的具体画面/动作——不要另起炉灶，不要概括过渡；从上章最后那个镜头继续。"
+                )
     else:
         # 按 transition_type 决定衔接风格
         trans = getattr(beat, "transition_type", "continuous") or "continuous"
@@ -413,8 +456,12 @@ def _build_full_prompt(state, directive, target_words, prev_tail):
     forbidden_block = _format_forbidden(directive)
     ability_plan_block = _format_ability_plan(directive)
     callback_seeds_block = _format_callback_seeds_block(directive)
+    # ★ DirectiveConsolidator 合并的「北极星」brief(directive.consolidated_brief)
+    # 优先级最高——放在所有其他块顶部
+    consolidated_brief_block = (getattr(directive, "consolidated_brief", "") or "").strip()
     external_ai_block = "\n".join(
         x for x in (
+            consolidated_brief_block,
             _format_reality_basis_constraint(state),
             _format_external_ai_constraint(state),
             _format_priority_contract(directive),
@@ -433,7 +480,9 @@ def _build_full_prompt(state, directive, target_words, prev_tail):
     plan_blocks = _get_plan_blocks_text(directive)
     # 整章单次写作时，voice card 覆盖所有本章涉及角色
     scene_chars = list((directive.character_states or {}).keys())
-    voice_cards_block = _format_voice_cards_for_scene(state, scene_chars)
+    voice_cards_block = _format_voice_cards_for_scene(
+        state, scene_chars, chapter_index=directive.chapter_index,
+    )
     prompt = f"""写第{directive.chapter_index}章。
 
 {external_ai_block}
@@ -711,12 +760,15 @@ def _format_beat_anchors(beat) -> str:
     """
     本幕的三类锚点——chapter_planner 规划时留给 writer 的具体抓手。
     对白/感官/戏剧节拍三层，每层"参考不强制"——让 writer 融入但不是照抄。
+
+    P1-3: 末尾追加 paragraph_mix(段落比例),让 writer 按比例分配段落而非凭感觉。
     """
     dialogue = [s for s in (getattr(beat, "dialogue_seeds", []) or []) if s]
     sensory = [s for s in (getattr(beat, "sensory_anchors", []) or []) if s]
     dramatic = [s for s in (getattr(beat, "dramatic_beats", []) or []) if s]
+    para_mix = getattr(beat, "paragraph_mix", None) or {}
 
-    if not (dialogue or sensory or dramatic):
+    if not (dialogue or sensory or dramatic or para_mix):
         return ""
 
     parts = ["═══ 本幕锚点（规划留下的抓手——融入其中大部分，不必全用；但不得整体忽略）═══"]
@@ -733,15 +785,47 @@ def _format_beat_anchors(beat) -> str:
         parts.append("【戏剧节拍】（这几个节点必须在本幕内某处出现，哪怕换句式表达）")
         for s in dramatic:
             parts.append(f"  · {s}")
+    # P1-3: 段落比例指引
+    if isinstance(para_mix, dict) and para_mix:
+        parts.append("【段落比例】(本幕段落分配,按比例落字)")
+        labels = {"dialogue": "对白", "action": "动作", "inner": "心理", "desc": "环境/描写"}
+        items = []
+        for k in ("dialogue", "action", "inner", "desc"):
+            pct = int(para_mix.get(k, 0) or 0)
+            if pct > 0:
+                items.append(f"{labels[k]} {pct}%")
+        if items:
+            parts.append(f"  · {' / '.join(items)}")
+            parts.append("  规则:按此比例分配本幕段落数量(不必精确,但不要某项 0% 也写一堆)。"
+                          "段落比例≠句子数比例——以段落数为准。")
+
+    # P0-2: 情绪余波承接(本幕开头必须自然带出上一幕末的情绪具体表现)
+    residue = (getattr(beat, "emotional_residue_from_prev", "") or "").strip()
+    if residue:
+        parts.append("【情绪余波承接】(本幕开头 50-100 字内必须自然带出)")
+        parts.append(f"  · {residue}")
+        parts.append("  规则:不要直接抄此句,要把它**化进具体动作/感官/思绪**(身体反应/某句回响/画面挥之不去)。")
+
+    # P0-5: 情绪台阶(本幕开场→末尾的情绪值,作为节奏锚)
+    entry = getattr(beat, "entry_emotion", 0)
+    exit_e = getattr(beat, "exit_emotion", 0)
+    if entry != 0 or exit_e != 0:
+        parts.append(f"【情绪台阶】入场 {entry:+d} → 末尾 {exit_e:+d} (-10 深渊 / 0 平静 / +10 极致高潮)")
+        parts.append(f"  规则:本幕情绪从 {entry:+d} 推到 {exit_e:+d},不要中间无理由暴起暴跌(除非戏剧节拍要求)。")
+
     return "\n".join(parts)
 
 
-def _format_voice_cards_for_scene(state: NovelState, scene_characters: list) -> str:
+def _format_voice_cards_for_scene(state: NovelState, scene_characters: list,
+                                    chapter_index: int = 0) -> str:
     """
     本幕出场角色的声音卡片——让 writer 写对白时直接看到"这个人该怎么说话"。
 
     只为真正出场的角色生成卡片（上限 5 个），不然 prompt 会无谓膨胀。
     配角如果没有独立 voice card 字段，就走 Character.brief()。
+
+    P1-2: 若角色是本章首次登场且有 first_appearance_signature,在卡片后追加
+    "【首秀亮相镜头】"提示——让 writer 把这一镜头自然写进本章。
     """
     if not scene_characters:
         return ""
@@ -752,8 +836,39 @@ def _format_voice_cards_for_scene(state: NovelState, scene_characters: list) -> 
             present.append(c)
     if not present:
         return ""
-    blocks = [c.voice_card() for c in present]
+
+    blocks = []
+    for c in present:
+        card = c.voice_card()
+        # P1-2: 首次登场检测
+        sig = (getattr(c, "first_appearance_signature", "") or "").strip()
+        if sig and chapter_index > 0 and _is_first_appearance(state, c.name, chapter_index):
+            card += (
+                f"\n· 【首秀亮相镜头】(本章是 {c.name} 首次登场,请把此镜头自然写进本章)：\n"
+                f"  {sig[:120]}"
+            )
+        blocks.append(card)
     return "═══ 本幕出场角色·声音卡 ═══\n" + "\n\n".join(blocks) + "\n"
+
+
+def _is_first_appearance(state: NovelState, char_name: str, chapter_index: int) -> bool:
+    """检查 char_name 是否在 chapter_index 之前从未在 completed_chapters 中出现过。
+
+    用 ChapterSummary.summary + key_events 字符串匹配(粗判,够用)。
+    """
+    if not char_name or len(char_name) < 2:
+        return False
+    for ch in (getattr(state, "completed_chapters", None) or []):
+        idx = getattr(ch, "index", -1)
+        if idx <= 0 or idx >= chapter_index:
+            continue
+        haystack = (
+            (getattr(ch, "summary", "") or "")
+            + "\n" + "\n".join(str(e) for e in (getattr(ch, "key_events", None) or []))
+        )
+        if char_name in haystack:
+            return False  # 已经出现过
+    return True
 
 
 def _format_character_states(directive: ChapterDirective) -> str:
@@ -1239,21 +1354,34 @@ def _get_hook_instruction(directive: ChapterDirective) -> str:
     # Batch 3:优先按 chapter_planner 分配的 HookType 给具体写作指引
     bp = getattr(directive, "blueprint", None)
     hook_spec = getattr(bp, "closing_hook_spec", None) if bp else None
+    base = ""
     if hook_spec is not None:
         type_str = hook_spec.type.value if hasattr(hook_spec.type, "value") else str(hook_spec.type)
         if type_str in _HOOK_TYPE_HINTS:
             preview = (hook_spec.text or "").strip()[:30]
             tail = f"——目标画面: {preview}" if preview else ""
-            return f"[{type_str} 钩子] {_HOOK_TYPE_HINTS[type_str]}{tail}"
+            base = f"[{type_str} 钩子] {_HOOK_TYPE_HINTS[type_str]}{tail}"
 
-    # 降级:按 chapter_position / tension
-    if directive.chapter_position == "卷尾":
-        return "必须有震撼的卷尾钩子，让读者立刻翻开下一卷"
-    if directive.tension == TensionLevel.PEAK:
-        return "高潮未完结，结尾在最紧张处切断"
-    if directive.tension == TensionLevel.TWIST:
-        return "反转后余震，结尾留下新的悬念"
-    return "自然悬念，让读者想知道接下来发生什么"
+    if not base:
+        # 降级:按 chapter_position / tension
+        if directive.chapter_position == "卷尾":
+            base = "必须有震撼的卷尾钩子，让读者立刻翻开下一卷"
+        elif directive.tension == TensionLevel.PEAK:
+            base = "高潮未完结，结尾在最紧张处切断"
+        elif directive.tension == TensionLevel.TWIST:
+            base = "反转后余震，结尾留下新的悬念"
+        else:
+            base = "自然悬念，让读者想知道接下来发生什么"
+
+    # P0-3: 二钩(情感回响层)——若 chapter_planner 给了 closing_hook_secondary,追加指引
+    secondary = (getattr(bp, "closing_hook_secondary", "") or "").strip() if bp else ""
+    if secondary:
+        base += (
+            f"\n  + 【二钩 · 情感回响层】{secondary}\n"
+            f"  规则:本章末尾要双钩配套——主钩(上方,悬念/反转层) + 二钩(此条,情感回响层)。"
+            "两层钩子必须**不同性质**(悬念+情感 / 反转+反应 / ...),给读者两个层次的余味。"
+        )
+    return base
 
 
 def _get_outline(state: NovelState, index: int) -> dict:

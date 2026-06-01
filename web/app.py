@@ -208,6 +208,19 @@ def api_projects_meta(project_id):
     return jsonify(project_manager.get_meta(project_id))
 
 
+@app.route("/api/projects/<project_id>/dashboard", methods=["GET"])
+def api_project_dashboard(project_id):
+    """作家仪表盘——汇总 7 板块只读快照(纯计算,零 LLM)。"""
+    try:
+        project_context.set_project(project_id)
+        state = _load()
+        from agents.progress_dashboard import compute_dashboard
+        data = compute_dashboard(state)
+        return jsonify({"status": "ok", "dashboard": data})
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {str(e)[:200]}"}), 500
+
+
 @app.route("/api/projects/<project_id>", methods=["DELETE"])
 def api_projects_delete(project_id):
     force = request.args.get("force", "false").lower() == "true"
@@ -347,10 +360,10 @@ def api_stepwise_rollback(project_id):
 
 # 阶段组的定义——对应 director._stepwise_checkpoint 的 5 个点
 _PHASE_GROUPS = [
-    {"id": "G1_intent",          "name": "立项",     "phases": ["-1", "0", "0.5", "0.6"]},
+    {"id": "G1_intent",          "name": "立项",     "phases": ["-1", "0", "0.5"]},
     {"id": "G2_world",           "name": "世界",     "phases": ["1A", "1A2", "1B", "1C", "1D", "1E", "1F", "1G", "1H"]},
     {"id": "G3_characters",      "name": "人物",     "phases": ["2", "2A2", "2B", "2C"]},
-    {"id": "G4_plot",            "name": "情节",     "phases": ["3A", "3B", "3B2", "3C", "3D", "3D2", "3E", "3E2", "3E3", "3F", "3G"]},
+    {"id": "G4_plot",            "name": "情节",     "phases": ["3A", "3B", "3B2", "3C", "3D", "3D2", "3E", "3E2", "3E3", "3F"]},
     {"id": "G5_framework_ready", "name": "框架就绪", "phases": []},  # 虚拟组:前 4 组全完成即满足
 ]
 
@@ -360,7 +373,6 @@ _PHASE_REVIEW_META: dict = {
     "-1":   {"name": "意图分析",     "section": "creative_intent", "regen_action": None},
     "0":    {"name": "立项三件套",   "section": "concept_pitch",   "regen_action": "after_concept_pitch"},
     "0.5":  {"name": "全书骨架",     "section": "master_outline",  "regen_action": "master_outline"},
-    "0.6":  {"name": "主角内核",     "section": "protagonist_journey", "regen_action": None},
     "1A":   {"name": "力量体系",     "section": "power_system",    "regen_action": "power_system"},
     "1A2":  {"name": "力量刻度",     "section": "power_system",    "regen_action": "power_scaling"},
     "1B":   {"name": "卷结构",       "section": "volumes",         "regen_action": "volumes"},
@@ -384,7 +396,6 @@ _PHASE_REVIEW_META: dict = {
     "3E2":  {"name": "红鲱鱼",       "section": "red_herrings",    "regen_action": None},
     "3E3":  {"name": "反转系统",     "section": "twist_system",    "regen_action": "twists"},
     "3F":   {"name": "机缘",         "section": "fortunes",        "regen_action": None},
-    "3G":   {"name": "主角历程",     "section": "protagonist_journey", "regen_action": None},
 }
 
 
@@ -3793,6 +3804,7 @@ def _dump_creative_intent_for_api(ci):
         {
             "name": p.name, "what": p.what, "why_engaging": p.why_engaging,
             "where_to_inject": p.where_to_inject, "intensity": p.intensity,
+            "kind": getattr(p, "kind", "suspense"),
             "adopted": p.adopted, "notes": p.notes,
         }
         for p in (ci.plot_supplements or [])
@@ -3818,6 +3830,7 @@ def _replace_creative_intent(ci, d: dict):
                         why_engaging=item.get("why_engaging", ""),
                         where_to_inject=item.get("where_to_inject", ""),
                         intensity=item.get("intensity", "mid"),
+                        kind=item.get("kind", "suspense"),
                         adopted=item.get("adopted", None),
                         notes=item.get("notes", ""),
                     ))
@@ -4156,13 +4169,6 @@ def _arc_to_dict(a):
 
 def _journey_to_dict(j):
     return {
-        "overall_theme": j.overall_theme,
-        "core_wound": j.core_wound,
-        "true_goal": j.true_goal,
-        "fatal_flaw": j.fatal_flaw,
-        "central_conflict": j.central_conflict,
-        "growth_arc": j.growth_arc,
-        "milestones": [m.__dict__ for m in j.milestones],
         "stage_beats": [b.__dict__ for b in j.stage_beats],
     }
 

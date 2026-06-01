@@ -73,9 +73,6 @@ from agents.foreshadow_manager import (
 from agents.fortune_planner import plan_all_fortunes, get_fortunes_for_volume_brief
 from agents.stage_architect import design_volume_stages
 from agents.character_web import design_relationship_web
-from agents.protagonist_journey import (
-    plan_protagonist_journey, get_journey_context_for_volume, get_stage_beat_context,
-)
 from agents.writer import write_chapter, revise_chapter
 from agents.critic import review_chapter
 from agents.memory import process_chapter, format_writing_context
@@ -146,12 +143,45 @@ class ChapterCanonBlockedError(RuntimeError):
 _STEPWISE_GROUPS = {
     # 注意：-1.5（intent_asset_extractor）和 -0.7（plot_enhancer）是 best-effort 步骤——
     # 失败不阻塞 G1，所以不挂在 group 必跑清单里（director 单独 if-not-done 跑）
-    "G1_intent":          ["-1", "0", "0.5", "0.6"],
+    # 2026-05-25：删 0.6（主角内核）+ 3G（主角历程）——审计为零下游消费的死代码 phase
+    "G1_intent":          ["-1", "0", "0.5"],
     "G2_world":           ["1A", "1A2", "1B", "1C", "1D", "1E", "1F", "1G", "1H"],
     "G3_characters":      ["2", "2A2", "2B", "2C", "2C2"],
-    "G4_plot":            ["3A", "3B", "3B2", "3C", "3D", "3D2", "3E", "3E2", "3E3", "3F", "3G"],
+    "G4_plot":            ["3A", "3B", "3B2", "3C", "3D", "3D2", "3E", "3E2", "3E3", "3F"],
     "G5_framework_ready": [],
 }
+
+# 已废弃 phase——这些 phase 不再跑也不会 mark done，但老项目的 progress_status
+# 可能留有它们的 "phase:X 产物未达标" warning。stepwise_checkpoint 成功路径上
+# 顺手清掉，避免用户在 web 上一直看到死警告。
+_LEGACY_PHASES_PER_GROUP: dict[str, set[str]] = {
+    "G1_intent": {"0.6"},   # 2026-05-25 删
+    "G4_plot":   {"3G"},     # 2026-05-25 删
+}
+
+
+def _clear_stepwise_failure_warnings(group_id: str) -> None:
+    """清掉本组在 stepwise checkpoint 失败时遗留的 warning（group:X + 本组任意 phase:Y）。
+
+    包括已废弃 phase 的 warning——老项目升级后第一次跑通本组时自动清理 stale 警告。
+    """
+    try:
+        from persistence.checkpoint import clear_progress_warnings
+    except Exception:
+        return
+    # 总汇 warning
+    try:
+        clear_progress_warnings(source=f"group:{group_id}")
+    except Exception:
+        pass
+    # 本组每个 phase 的产物未达标 warning（含已废弃 phase）
+    phase_ids = set(_STEPWISE_GROUPS.get(group_id, []))
+    phase_ids |= _LEGACY_PHASES_PER_GROUP.get(group_id, set())
+    for pid in phase_ids:
+        try:
+            clear_progress_warnings(source=f"phase:{pid}")
+        except Exception:
+            pass
 
 
 # phase id → 跟左侧大纲一致的中文名——用于 stdout 摘要、warning 文本
@@ -205,8 +235,6 @@ def _phase_labels_join(pids) -> str:
 # 但产物为空"，scheduler 在 _on_success 里就不会写 progress，下次会重跑。
 # 没列在这里的 task.id 默认通过（保持兼容）。
 _TASK_PREDICATES = {
-    # Phase 0.6 · 主角内核（前置）
-    "0.6": lambda s: bool(s.protagonist_journey.overall_theme and s.protagonist_journey.fatal_flaw),
     # Phase 1 · 世界
     "1A":  lambda s: bool(s.power_system and (not getattr(s.power_system, "has_hierarchy", True) or s.power_system.realms)),
     "1B":  lambda s: bool(s.volumes),
@@ -229,7 +257,7 @@ _TASK_PREDICATES = {
     "3E2": lambda s: bool(s.red_herrings),  # 红鲱鱼（director.py 模式注册）
     "3E3": lambda s: bool(s.twist_system and s.twist_system.chains),  # 反转链
     "3F":  lambda s: bool(s.fortunes),
-    "3G":  lambda s: bool(s.protagonist_journey.overall_theme),
+    "3G":  lambda s: bool(s.protagonist_journey.stage_beats),
     "2C2": lambda s: bool(
         s.power_system
         and s.power_system.special_abilities
@@ -266,10 +294,9 @@ def _scheduler_predicate(task, state) -> bool:
 
 
 # ── phase 失败诊断：检测到 phase 产物为空时输出"具体哪个字段空 / 长度多少" ──
-# 用法：_diagnose_phase_failure("3G", state) → "protagonist_journey.milestones=0条（期望≥6）"
+# 用法：_diagnose_phase_failure("3G", state) → "protagonist_journey.stage_beats=0条"
 # stepwise_checkpoint 强标 missing 时调用，让用户在 stdout/前端 warning 看到根因。
 _PHASE_FIELDS_FOR_DIAGNOSIS = {
-    "0.6": [("protagonist_journey.overall_theme",   lambda s: 1 if s.protagonist_journey.overall_theme else 0,  1, "字段")],
     "1A":  [("power_system.realms",                 lambda s: len(s.power_system.realms) if s.power_system else 0, 1, "条")],
     "1B":  [("volumes",                             lambda s: len(s.volumes), 1, "卷")],
     "1C":  [("factions",                            lambda s: len(s.factions), 1, "条")],
@@ -289,10 +316,7 @@ _PHASE_FIELDS_FOR_DIAGNOSIS = {
     "3E2": [("red_herrings",                        lambda s: len(s.red_herrings), 1, "个")],
     "3E3": [("twist_system.chains",                 lambda s: len(s.twist_system.chains) if s.twist_system else 0, 1, "条")],
     "3F":  [("fortunes",                            lambda s: len(s.fortunes), 1, "个")],
-    "3G":  [
-        ("protagonist_journey.overall_theme",   lambda s: 1 if s.protagonist_journey.overall_theme else 0, 1, "字段"),
-        ("protagonist_journey.milestones",      lambda s: len(s.protagonist_journey.milestones), 1, "卷"),
-    ],
+    "3G":  [("protagonist_journey.stage_beats", lambda s: len(s.protagonist_journey.stage_beats), 1, "条")],
     "4":   [("story_stages",                        lambda s: len(s.story_stages), 1, "个")],
     "4C":  [("chapter_type_plans",                  lambda s: len(s.chapter_type_plans), 1, "个")],
 }
@@ -379,7 +403,8 @@ class DirectorAgent:
             pass
 
     def _apply_revision_and_reaudit(self, *, chapter_index, path, original_text,
-                                    new_text, audit_fn, audits_dict, label):
+                                    new_text, audit_fn, audits_dict, label,
+                                    directive=None):
         """
         章后审计触发整章修订后的统一收尾——三处审计循环（能力/读者/对话）共用：
           1. new_text 长度不足原稿 70% → 拒绝写回，返回 (None, original_text)
@@ -423,7 +448,7 @@ class DirectorAgent:
         )
         # 给 initial_audit 一个 dummy 让 needs_revise=True 评估通过（不实际重跑入口 audit）
         result = run_revise_loop(
-            state=self.state, chapter_index=chapter_index, directive=None,
+            state=self.state, chapter_index=chapter_index, directive=directive,
             config=cfg, initial_text=original_text,
             initial_audit=object(),  # dummy，让 needs_revise 立即返回 True
         )
@@ -497,8 +522,12 @@ class DirectorAgent:
             raise SystemExit(0)
         elif not new_phases:
             # 既没缺，又没新增——说明本组本来就早已完成，无需再暂停
+            # 顺便清掉上次失败时遗留的本组 warning（包括已废弃 phase）
+            _clear_stepwise_failure_warnings(group_id)
             return
         # 保存进度 + 快照（回滚点，标签含 group_id，前端可用它找到）
+        # 同时清掉上次失败时遗留的本组 warning
+        _clear_stepwise_failure_warnings(group_id)
         save_state(self.state)
         try:
             version_control.snapshot(
@@ -819,28 +848,21 @@ class DirectorAgent:
             from agents.master_dispatcher import dispatch_master_outline
             dispatch_master_outline(self.state)
             mark_phase_done("0.5", self.state)
+            # HITL: 大反派身份/动机确认——决定全书结局,埋了就难撤
+            try:
+                ant_payload = self._build_master_antagonist_payload()
+                if ant_payload.get("antagonist_slots"):
+                    human_in_loop.gate_master_antagonist(
+                        self.state, ant_payload, mode=HITL_MODE,
+                    )
+            except HITLPause as _hp:
+                save_state(self.state)
+                print(f"\n  {_hp}")
+                raise SystemExit(0)
+            except Exception as _e:
+                print(f"  ⚠ 大反派 gate 失败(不阻塞):{type(_e).__name__}: {_e}")
         else:
             print("  ✓ [跳过] Phase 0.5 MasterOutline 已完成")
-
-        # ── Phase 0.6: 主角内核（核心创伤/真实目标/致命弱点）──
-        # 提到 1A/1B/2A 之前——下游卷结构/人物档案/叙事线都围绕这套内核展开，
-        # 而不是事后由 3G 来"反推合理化"
-        if not is_phase_done("0.6", p):
-            _section("Phase 0.6: 主角内核（创伤/目标/弱点——下游所有 phase 围绕它展开）")
-            self._set_current_step("Phase 0.6", "ProtagonistCore", "定主角核心创伤/真实目标/致命弱点")
-            from agents.protagonist_journey import design_protagonist_core
-            design_protagonist_core(self.state)
-            # 模块审核 + 不达标重生（最多 2 次）
-            try:
-                from agents.module_reviewer import review_and_regenerate
-                review_and_regenerate(self.state, "0.6", lambda s: design_protagonist_core(s))
-            except Exception as _e:
-                print(f"  ⚠ 0.6 模块审核失败（不影响产出）：{type(_e).__name__}: {_e}")
-            mark_phase_done_if("0.6", self.state,
-                lambda s: bool(s.protagonist_journey.overall_theme and s.protagonist_journey.fatal_flaw),
-                on_skip_msg="主角内核未生成")
-        else:
-            print("  ✓ [跳过] Phase 0.6 主角内核已完成")
 
         # ⏸ 阶段组 1：立项完成
         self._stepwise_checkpoint("G1_intent", "立项（意图/卖点/套路/文风/骨架蓝图）")
@@ -1172,31 +1194,9 @@ class DirectorAgent:
         else:
             print("  ✓ [跳过] Phase 3-F 机缘规划已完成")
 
-        if not is_phase_done("3G", p):
-            _section("Phase 3-G: 主角历程规划（卷级里程碑——内核已在 0.6 定）")
-            from agents.protagonist_journey import _step1_overall_arc, _step2_volume_milestones
-            # 0.6 跑过的项目内核已填好——只在缺失时补跑（向后兼容老项目）
-            if not self.state.protagonist_journey.overall_theme:
-                print("  ⓘ 内核未填（老项目或 0.6 跳过），用 1A/1B/2A 上下文补跑")
-                _step1_overall_arc(self.state)
-            _step2_volume_milestones(self.state)
-            self._save("protagonist_journey.json", self._dump_protagonist_journey())
-            # 模块审核（已加兜底——LLM 失败时也会有最小骨架，审核能识别出来）
-            try:
-                from agents.module_reviewer import review_and_regenerate
-                def _re_3g(s):
-                    s.protagonist_journey.milestones = []
-                    _step2_volume_milestones(s)
-                review_and_regenerate(self.state, "3G", _re_3g)
-                self._save("protagonist_journey.json", self._dump_protagonist_journey())
-            except Exception as _e:
-                print(f"  ⚠ 3G 模块审核失败：{type(_e).__name__}: {_e}")
-            # 修 typo：state 字段是 milestones 不是 volume_milestones
-            mark_phase_done_if("3G", self.state,
-                lambda s: bool(s.protagonist_journey.overall_theme) and bool(s.protagonist_journey.milestones),
-                on_skip_msg="主角整体弧线 overall_theme 或卷级 milestones 列表为空")
-        else:
-            print("  ✓ [跳过] Phase 3-G 主角历程已完成")
+        # ── Phase 3-G 已删除（2026-05-25）──
+        # 原本生成 overall_theme/core_wound/.../milestones——所有字段被审计为零下游消费。
+        # stage_beats（唯一有用产物）由 _beats_for_volume 在卷级写作时独立生成，不需要 Phase 3G。
 
         # ⏸ 阶段组 4：情节完成
         self._stepwise_checkpoint("G4_plot", "情节（叙事线/爽点/伏笔/反转/节奏/情绪/主角历程）")
@@ -1549,6 +1549,127 @@ class DirectorAgent:
             self.state.done_volume_review_indices.append(volume_index)
         self._save_meta_safely()
 
+        # HITL: 整卷复盘 gate —— 让作者决定进入下一卷还是回去改本卷
+        try:
+            vol_review = self._build_volume_end_review(volume_index, vol)
+            human_in_loop.gate_volume_end(self.state, volume_index, vol_review, mode=HITL_MODE)
+        except HITLPause as e:
+            save_state(self.state)
+            print(f"\n  {e}")
+            raise SystemExit(0)
+        except Exception as _e:
+            print(f"  ⚠ 整卷复盘 gate 失败(不阻塞下一卷):{type(_e).__name__}: {_e}")
+
+    def _build_master_antagonist_payload(self) -> dict:
+        """从 master_outline 抽反派槽位 + 涉及反派的关键节点,供 gate_master_antagonist。"""
+        mo = getattr(self.state, "master_outline", None)
+        if mo is None or not getattr(mo, "generated", False):
+            return {}
+        ant_slots = []
+        ant_ids: set = set()
+        for slot in (getattr(mo, "character_slots", None) or []):
+            role_tag = (getattr(slot, "role_tag", "") or "").strip()
+            if role_tag == "反派":
+                ant_slots.append({
+                    "slot_id": slot.slot_id,
+                    "function": (getattr(slot, "function", "") or "")[:80],
+                    "brief_hint": (getattr(slot, "brief_hint", "") or "")[:80],
+                    "narrative_arc_hint": (getattr(slot, "narrative_arc_hint", "") or "")[:60],
+                    "function_detail": (getattr(slot, "function_detail", "") or "")[:120],
+                    "first_volume": getattr(slot, "first_volume", 1),
+                    "last_volume": getattr(slot, "last_volume", -1),
+                })
+                ant_ids.add(slot.slot_id)
+        # 涉及反派的关键剧情节点
+        ant_setpieces = []
+        for sp in (getattr(mo, "plot_setpieces", None) or []):
+            involved = set(getattr(sp, "involved_slot_ids", None) or [])
+            if involved & ant_ids:
+                ant_setpieces.append({
+                    "anchor": getattr(sp, "anchor", ""),
+                    "kind": getattr(sp, "kind", ""),
+                    "gist": (getattr(sp, "gist", "") or "")[:80],
+                    "involved": [s for s in involved if s in ant_ids],
+                })
+        return {
+            "central_conflict": (getattr(mo, "central_conflict", "") or "")[:120],
+            "thematic_core": (getattr(mo, "thematic_core", "") or "")[:60],
+            "antagonist_slots": ant_slots,
+            "antagonist_setpieces": ant_setpieces,
+        }
+
+    def _build_volume_end_review(self, volume_index: int, vol) -> dict:
+        """聚合本卷复盘数据(供 gate_volume_end payload)。"""
+        # 本卷已完成章节
+        chapters = [
+            ch for ch in (self.state.completed_chapters or [])
+            if getattr(ch, "volume_index", 0) == volume_index
+        ]
+        # 平均 critic 评分
+        scores = []
+        hook_types: list[str] = []
+        sp_triggered = 0
+        for ch in chapters:
+            review = getattr(ch, "critic_review", None) or {}
+            if isinstance(review, dict):
+                try:
+                    scores.append(float(review.get("score", 0)))
+                except Exception:
+                    pass
+            ht = (getattr(ch, "closing_hook_type", "") or "").strip()
+            if ht:
+                hook_types.append(ht)
+            sp_triggered += len(getattr(ch, "sp_triggered", None) or [])
+        avg_score = round(sum(scores) / len(scores), 2) if scores else 0
+        hook_diversity = (
+            round(len(set(hook_types)) / len(hook_types), 2) if hook_types else 0
+        )
+        # 本卷未关闭的 open_loops 计数(粗估)
+        thread = getattr(self.state, "story_thread", None)
+        open_loops = 0
+        if thread is not None:
+            for l in (getattr(thread, "open_loops", None) or []):
+                if not getattr(l, "closed", False):
+                    open_loops += 1
+        # 本卷待解 warnings(简化为本卷范围的 progress_warnings 总数)
+        warnings_count = 0
+        try:
+            from agents.progress_dashboard import _read_progress_warnings
+            warns = _read_progress_warnings()
+            for w in warns:
+                src = (w.get("source") or "") if isinstance(w, dict) else ""
+                # source 形如 chapter:N:xxx,提取 N 判断是否在本卷范围
+                if ":" in src:
+                    parts = src.split(":")
+                    if parts[0] == "chapter" and len(parts) >= 2:
+                        try:
+                            ch_idx = int(parts[1])
+                            if vol.chapter_start <= ch_idx <= vol.chapter_end:
+                                warnings_count += 1
+                        except ValueError:
+                            pass
+        except Exception:
+            pass
+        # 卷级审查报告摘要
+        reviews = getattr(self.state, "volume_review_reports", None) or {}
+        last_issues = reviews.get(volume_index, []) or []
+        review_summary = [
+            f"[{getattr(i, 'level', '?')}] {(getattr(i, 'issue', '') or '')[:60]}"
+            for i in last_issues[:6]
+        ]
+        return {
+            "volume_index": volume_index,
+            "volume_title": getattr(vol, "title", ""),
+            "chapter_range": [vol.chapter_start, vol.chapter_end],
+            "chapter_count": len(chapters),
+            "avg_critic_score": avg_score,
+            "hook_diversity": hook_diversity,
+            "open_loops_count": open_loops,
+            "satisfaction_triggered_count": sp_triggered,
+            "warnings_count": warnings_count,
+            "review_summary": review_summary,
+        }
+
     def _collect_revise_feedback(self, issues, ch_low: int, ch_high: int, source: str) -> dict:
         """
         把 critical issues 按章号聚合成重写反馈字符串。
@@ -1685,10 +1806,12 @@ class DirectorAgent:
         # 场景蓝图（ChapterPlannerAgent）
         self._set_current_step(agent="ChapterPlanner", detail=f"第 {chapter_index} 章 场景蓝图",
                                 chapter_index=chapter_index)
+        # LengthGovernor 算好的 target_words 优先（按 platform + chapter_type 推算）
+        _target_words = directive.target_words or WORDS_PER_CHAPTER
         blueprint = build_chapter_blueprint(
             self.state, directive,
             outline_goal=outline.get("goal", "继续推进故事"),
-            total_words=WORDS_PER_CHAPTER,
+            total_words=_target_words,
         )
         directive.blueprint = blueprint
         scenes = len(blueprint.scene_beats)
@@ -1704,7 +1827,7 @@ class DirectorAgent:
               + (f" · 类型 {ch_type}" if ch_type else ""))
         if title_hint:
             print(f"  ║ 拟用标题：{title_hint}")
-        print(f"  ║ 节奏：张力={directive.tension.value} 节奏={directive.rhythm.value} 位置={directive.chapter_position} 字数预算≈{WORDS_PER_CHAPTER}")
+        print(f"  ║ 节奏：张力={directive.tension.value} 节奏={directive.rhythm.value} 位置={directive.chapter_position} 字数预算≈{_target_words}")
         print(f"  ║ 主线：{directive.primary_line}")
         print(f"  ║ 大纲目标：{outline.get('goal','')[:80]}")
         if directive.purpose:
@@ -1751,7 +1874,7 @@ class DirectorAgent:
         # 写初稿
         self._set_current_step(agent="Writer", detail=f"第 {chapter_index} 章 正文写作",
                                 chapter_index=chapter_index)
-        draft = write_chapter(self.state, directive, WORDS_PER_CHAPTER, prev_tail=prev_tail)
+        draft = write_chapter(self.state, directive, _target_words, prev_tail=prev_tail)
         print(f"  ✓ 初稿 {len(draft)} 字")
 
         # ── 真 AI 接入：扫描 [[ASK_AI:能力名|问题]] 占位，用绑定的真 LLM 回答替换 ──
@@ -1912,6 +2035,7 @@ class DirectorAgent:
                 hook_score = dim.get("hook", 0)
                 char_score = dim.get("character", 0)
                 struct_score = dim.get("structure", 0)
+                opening_hook_score = dim.get("opening_hook_strength", 0)
                 opening_failures = []
                 if isinstance(hook_score, (int, float)) and hook_score < 8:
                     opening_failures.append(f"钩子 {hook_score}<8")
@@ -1919,6 +2043,9 @@ class DirectorAgent:
                     opening_failures.append(f"代入 {char_score}<8")
                 if isinstance(struct_score, (int, float)) and struct_score < 8:
                     opening_failures.append(f"结构 {struct_score}<8")
+                # P0-1: 首段钩子力度——前 10 章硬指标(决定 30%+ 读者去留)
+                if isinstance(opening_hook_score, (int, float)) and 0 < opening_hook_score < 8:
+                    opening_failures.append(f"首段钩子 {opening_hook_score}<8 (前300字白描)")
                 if opening_failures:
                     force_reasons.append(f"开篇专项[{ '/'.join(opening_failures)}]")
                     _extra_feedback_box[0] = (_extra_feedback_box[0] + "\n" if _extra_feedback_box[0] else "") + (
@@ -1992,6 +2119,27 @@ class DirectorAgent:
             initial_text=draft,
         )
         final = critic_result.final_text
+
+        # HITL: critic revise 跑满仍 residual_needs_revise——让作者拍板
+        # 防"修了 N 轮还是不过"的稿被默默接受
+        if critic_result.residual_needs_revise and HITL_MODE != "skip":
+            last_audit = getattr(critic_result, "last_audit", None) or {}
+            last_score = 0
+            last_feedback = ""
+            if isinstance(last_audit, dict):
+                try:
+                    last_score = float(last_audit.get("score", 0))
+                except Exception:
+                    pass
+                last_feedback = str(last_audit.get("feedback", ""))[:500]
+            try:
+                human_in_loop.gate_critic_unrecoverable(
+                    self.state, chapter_index, last_score, last_feedback, mode=HITL_MODE,
+                )
+            except HITLPause as e:
+                save_state(self.state)
+                print(f"\n  {e}")
+                raise SystemExit(0)
 
         # ── 设定合规审核（独立 LLM，Gemini Flash Lite）──────────────
         # critic 管"文学质量"；setup_reviewer 管"是否符合设定"——两层正交
@@ -2101,6 +2249,19 @@ class DirectorAgent:
         )
         final = setup_result.final_text
 
+        # ★ LengthGovernor —— 章后字数兜底检查（按 platform + chapter_type 校验）
+        # 过短/过长 → progress_warning(chapter:N:length);通过 → 清同 source 旧告警
+        try:
+            from agents.length_governor import report_chapter_length as _rcl
+            _len_result = _rcl(chapter_index, final, directive.target_words or 0)
+            if not _len_result["ok"]:
+                print(
+                    f"  ⚠ 字数 {_len_result['actual']}/{_len_result['target']} "
+                    f"({int(_len_result['ratio']*100)}%) — {_len_result['advice'][:60]}"
+                )
+        except Exception as _e:
+            print(f"  ⚠ length_governor 失败(不阻塞):{type(_e).__name__}: {_e}")
+
         # 记忆提取
         self._set_current_step(agent="Memory", detail=f"第 {chapter_index} 章 摘要/记忆提取",
                                 chapter_index=chapter_index)
@@ -2113,6 +2274,103 @@ class DirectorAgent:
                 summary.closing_hook_type = hook_spec.type.value
         except Exception:
             pass
+
+        # ★ QuotableExtractor —— 章后挖金句/可截图段,挂在 summary.quotable_moments
+        # 下章 writer 可注入"上章成功的调性"作参考
+        try:
+            from agents.quotable_extractor import (
+                extract_from_chapter as _extract_quotable,
+                attach_to_summary as _attach_quotable,
+            )
+            _moments = _extract_quotable(
+                self.state, chapter_index, final,
+                chapter_type=directive.chapter_type or "",
+            )
+            if _moments:
+                _attach_quotable(summary, _moments)
+                print(f"  ✨ 金句提取: {len(_moments)} 段(top={_moments[0].impact_score})")
+        except Exception as _e:
+            print(f"  ⚠ 金句提取失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # ★ POVChecker —— 章后主角视角守门
+        # 累积 protagonist_known_facts;识别"超出已知范围"的主角言行 → progress_warning
+        try:
+            from agents.pov_checker import audit_and_apply as _pov_audit
+            _pov_result = _pov_audit(self.state, chapter_index, final)
+            if _pov_result.ok and _pov_result.violations:
+                crit_violations = [v for v in _pov_result.violations if v.severity == "critical"]
+                warn = len(_pov_result.violations) - len(crit_violations)
+                print(f"  👁 POV 检查: {len(crit_violations)} critical / {warn} warn / 新知事实 {len(_pov_result.new_facts)} 条")
+                # HITL: critical 残留 → gate (主角"突然知道"是不可逆破坏代入)
+                if crit_violations and HITL_MODE != "skip":
+                    try:
+                        vios_payload = [
+                            {"excerpt": v.excerpt[:80], "explanation": v.explanation[:80]}
+                            for v in crit_violations
+                        ]
+                        human_in_loop.gate_pov_critical_residual(
+                            self.state, chapter_index, vios_payload, mode=HITL_MODE,
+                        )
+                    except HITLPause as _hp:
+                        save_state(self.state)
+                        print(f"\n  {_hp}")
+                        raise SystemExit(0)
+            elif _pov_result.ok:
+                print(f"  👁 POV 检查通过 · 新知事实 {len(_pov_result.new_facts)} 条")
+        except SystemExit:
+            raise
+        except Exception as _e:
+            print(f"  ⚠ POV 检查失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # ★ AnachronismDetector —— 穿越/重生题材的时代断代检查(fast filter 无命中跳过 LLM)
+        try:
+            from agents.anachronism_detector import audit_and_surface as _ana_audit
+            _ana_issues = _ana_audit(self.state, chapter_index, final)
+            if _ana_issues:
+                crit = sum(1 for i in _ana_issues if i.severity == "critical")
+                warn = len(_ana_issues) - crit
+                print(f"  ⏳ 时代断代: {crit} critical / {warn} warn")
+        except Exception as _e:
+            print(f"  ⚠ 时代断代检查失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # ★ ForeshadowExposureTracker —— 累计每个伏笔的暴露度,超阈值告警提前回收
+        try:
+            from agents.foreshadow_exposure_tracker import audit_and_apply as _fw_exp_audit
+            _fwx = _fw_exp_audit(self.state, chapter_index, final)
+            if _fwx["exposed_count"] > 0:
+                print(f"  🔍 伏笔暴露追踪: 本章命中 {_fwx['exposed_count']} 个 / 超阈值 {_fwx['over_threshold_count']} 个")
+        except Exception as _e:
+            print(f"  ⚠ 伏笔暴露追踪失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # ★ SupportingCastTracker —— 纯规则扫配角戏份(每 5 章触发失踪/抢戏检查)
+        try:
+            from agents.supporting_cast_tracker import update_after_chapter as _cast_update
+            _cast = _cast_update(self.state, chapter_index, volume_index)
+            if _cast["missing_majors"]:
+                print(f"  🎭 配角失踪告警: {len(_cast['missing_majors'])} 个重要配角长期未出场")
+            if _cast["hog_warnings"]:
+                print(f"  🎭 配角抢戏告警: {len(_cast['hog_warnings'])} 个配角戏份比例过高")
+            # P1-2: 每 5 章扫配角标志动作复现率(防"出场 1 次拨头发,再 10 章不拨" 标志失效)
+            if chapter_index % 5 == 0:
+                from agents.supporting_cast_tracker import scan_mannerism_recurrence
+                _weak = scan_mannerism_recurrence(self.state, chapter_index, lookback=10)
+                if _weak:
+                    print(f"  🎭 标志动作复现率低: {len(_weak)} 个配角的 signature_mannerisms 失效")
+        except Exception as _e:
+            print(f"  ⚠ 配角戏份追踪失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # ★ AntagonistLifecycleTracker —— 反派 lifecycle 追踪(纯规则)
+        # 章后扫 summary 标 triggered;搁置/秒杀超阈值 → progress_warning
+        try:
+            from agents.antagonist_lifecycle_tracker import track_after_chapter as _ant_track
+            _ant = _ant_track(self.state, chapter_index, final)
+            if _ant["triggered_count"] > 0 or _ant["missing_warnings"]:
+                print(
+                    f"  👹 反派 lifecycle: 触发 {_ant['triggered_count']} 节点 / "
+                    f"告警 {len(_ant['missing_warnings'])} 条"
+                )
+        except Exception as _e:
+            print(f"  ⚠ 反派 lifecycle 追踪失败(不阻塞):{type(_e).__name__}: {_e}")
         # P2:把 critic 最后一轮 review 快照写到 summary(UI 可视化用)
         try:
             _last = getattr(critic_result, "last_audit", None)
@@ -2564,14 +2822,20 @@ class DirectorAgent:
                     fb = "\n".join(fb_parts)
                     self._set_current_step(agent="Writer", detail=f"第 {chapter_index} 章 读者反馈定向修订",
                                             chapter_index=chapter_index)
-                    print(f"  [reader-revise] 触发整章修订（读者审计不达标）")
-                    new_text = revise_chapter(self.state, directive, final, fb)
-                    new_r, final = self._apply_revision_and_reaudit(
-                        chapter_index=chapter_index, path=path,
-                        original_text=final, new_text=new_text,
-                        audit_fn=reader_audit, audits_dict=self.state.reader_audits,
-                        label="reader-revise",
-                    )
+                    # P0-2: 跨 audit 总上限检查 —— 已达上限则跳过本次 revise(防个性稀释)
+                    from core.revise_loop import is_total_cap_exceeded
+                    if is_total_cap_exceeded(directive):
+                        print(f"  [reader-revise] 跳过(本章 revise 总轮数已达上限,防个性稀释)")
+                    else:
+                        print(f"  [reader-revise] 触发整章修订(读者审计不达标)")
+                        new_text = revise_chapter(self.state, directive, final, fb)
+                        new_r, final = self._apply_revision_and_reaudit(
+                            chapter_index=chapter_index, path=path,
+                            original_text=final, new_text=new_text,
+                            audit_fn=reader_audit, audits_dict=self.state.reader_audits,
+                            label="reader-revise",
+                            directive=directive,
+                        )
                     if new_r is not None:
                         print(f"  [reader-revise] 修订后 overall={new_r.overall_score} retention={new_r.retention_estimate}%")
         except Exception as e:
@@ -2616,14 +2880,20 @@ class DirectorAgent:
                     fb = "\n".join(fb_parts)
                     self._set_current_step(agent="Writer", detail=f"第 {chapter_index} 章 对话定向修订",
                                             chapter_index=chapter_index)
-                    print(f"  [dialogue-revise] 触发对话定向修订")
-                    new_text = revise_chapter(self.state, directive, final, fb)
-                    new_d, final = self._apply_revision_and_reaudit(
-                        chapter_index=chapter_index, path=path,
-                        original_text=final, new_text=new_text,
-                        audit_fn=dialogue_audit, audits_dict=self.state.dialogue_audits,
-                        label="dialogue-revise",
-                    )
+                    # P0-2: 跨 audit 总上限检查 —— 已达上限则跳过(防个性稀释)
+                    from core.revise_loop import is_total_cap_exceeded
+                    if is_total_cap_exceeded(directive):
+                        print(f"  [dialogue-revise] 跳过(本章 revise 总轮数已达上限,防个性稀释)")
+                    else:
+                        print(f"  [dialogue-revise] 触发对话定向修订")
+                        new_text = revise_chapter(self.state, directive, final, fb)
+                        new_d, final = self._apply_revision_and_reaudit(
+                            chapter_index=chapter_index, path=path,
+                            original_text=final, new_text=new_text,
+                            audit_fn=dialogue_audit, audits_dict=self.state.dialogue_audits,
+                            label="dialogue-revise",
+                            directive=directive,
+                        )
                     if new_d is not None:
                         print(f"  [dialogue-revise] 修订后 overall={new_d.overall_score} 潜台词={new_d.subtext_density} 差异化={new_d.voice_distinctiveness}")
         except Exception as e:
@@ -2825,6 +3095,60 @@ class DirectorAgent:
                     print(f"\n  {e}")
                     raise SystemExit(0)
 
+        # 3. 重要角色死亡——不可逆事件,必须作者拍板
+        deaths = self._detect_major_deaths(summary)
+        for char_name in deaths:
+            try:
+                human_in_loop.gate_major_death(
+                    self.state, chapter_index, char_name, mode=HITL_MODE
+                )
+            except HITLPause as e:
+                save_state(self.state)
+                print(f"\n  {e}")
+                raise SystemExit(0)
+
+    def _detect_major_deaths(self, summary) -> list[str]:
+        """扫 summary 检测重要角色死亡(粗启发,误报由作者审 gate 时甄别)。
+
+        规则:
+        · 仅对重要角色生效(主角/主要配角/反派)
+        · 角色名出现且周围 30 字内含死亡动词("死""亡""殒""陨落""丧命""牺牲""被杀""断气")
+        · 排除否定/修辞("没死""想死""死路一条""死灰""差点死""死气沉沉")
+        """
+        deaths: list[str] = []
+        text = (
+            (getattr(summary, "summary", "") or "")
+            + "\n" + "\n".join(str(e) for e in (getattr(summary, "key_events", None) or []))
+        )
+        if not text:
+            return deaths
+
+        death_verbs = ["死了", "丧命", "牺牲", "被杀", "断气", "殒命", "陨落", "毙命", "气绝"]
+        negators = ["没死", "想死", "死路一条", "死灰", "差点死", "死气沉沉", "假死",
+                    "诈死", "如死", "求死", "找死", "死战"]
+
+        for c in (getattr(self.state, "characters", None) or []):
+            role_val = getattr(c.role, "value", str(c.role))
+            if role_val not in ("主角", "主要配角", "反派"):
+                continue
+            name = getattr(c, "name", "")
+            if not name or len(name) < 2 or name not in text:
+                continue
+            # 检测 name 周围 ±30 字窗口
+            idx = text.find(name)
+            while idx >= 0:
+                window = text[max(0, idx - 30):idx + len(name) + 30]
+                hit_verb = any(v in window for v in death_verbs)
+                hit_neg = any(neg in window for neg in negators)
+                if hit_verb and not hit_neg:
+                    deaths.append(name)
+                    break
+                idx = text.find(name, idx + len(name))
+
+        # 主角不该死(主角死了 = 全书剧终),但仍触发 gate 让作者确认是否真要让主角"死"
+        # (穿越文/重生文里主角"死亡"可能是剧情开端)
+        return list(set(deaths))
+
     # ═══════════════════════════════════════════════════
     #  章节指令生成（整合所有系统）
     # ═══════════════════════════════════════════════════
@@ -2942,6 +3266,74 @@ class DirectorAgent:
                 print(f"  🎯 读者预期: {len(expectations)} 条预测")
         except Exception as _e:
             print(f"  ⚠ 读者预期预测失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # ★ FeedbackIngestor —— 把队列里命中本章的结构化反馈注入 directive
+        # critical → must_include 头部+user_feedback / major → must_include / minor → user_feedback
+        try:
+            from agents.feedback_ingestor import apply_to_directive as _apply_fb
+            _fb_applied = _apply_fb(self.state, directive)
+            if _fb_applied > 0:
+                print(f"  📝 应用作者结构化反馈: {_fb_applied} 条注入 directive")
+        except Exception as _e:
+            print(f"  ⚠ feedback_ingestor apply 失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # P0-4: 读者疑问积压 → 强制本章正面回应
+        try:
+            from agents.long_term_cohesion import get_overdue_reader_questions
+            overdue_qs = get_overdue_reader_questions(self.state)
+            if overdue_qs:
+                q_lines = [f"「{q['q'][:50]}」(积压 {q.get('age', '?')} 章)" for q in overdue_qs[:3]]
+                directive.must_include.insert(0, (
+                    "【读者积压疑问·必须本章正面回应】: " + " | ".join(q_lines)
+                    + " —— 让主角自己问出来 / 让旁人质疑 / 走剧情自然展开,任选其一"
+                ))
+                print(f"  ❓ 读者疑问积压 {len(overdue_qs)} 条注入 directive")
+        except Exception as _e:
+            print(f"  ⚠ 读者疑问注入失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # ★ LengthGovernor —— 按 platform + chapter_type 推算 target_words
+        # 替代硬编码 WORDS_PER_CHAPTER,适配不同平台(起点/番茄/晋江/...)的字数预期
+        try:
+            from agents.length_governor import compute_target_words as _ctw
+            directive.target_words = _ctw(
+                self.state, chapter_index, directive.chapter_type or "",
+            )
+        except Exception as _e:
+            directive.target_words = 0  # 0 → director 兜底走 WORDS_PER_CHAPTER
+
+        # ★ HookDesigner —— 纯规则推荐章末 HookType(防钩子单一化收敛)
+        # chapter_planner LLM 优先采用此 suggested,允许覆盖
+        try:
+            from agents.hook_designer import apply_to_directive as _apply_hook
+            _hook_sug = _apply_hook(self.state, directive)
+            if _hook_sug:
+                print(f"  🪝 推荐章末钩子: {_hook_sug.reason}")
+        except Exception as _e:
+            print(f"  ⚠ hook_designer 失败(不阻塞):{type(_e).__name__}: {_e}")
+
+        # ★ DirectiveConsolidator —— 写章前最后一步:把 30+ 字段合并成单一「北极星」brief
+        # writer prompt 顶部读这段作为优先级化总览,原 30+ 字段保留供细节查阅
+        try:
+            from agents.directive_consolidator import consolidate as _consolidate
+            brief = _consolidate(directive, self.state)
+            directive.consolidated_brief = brief.to_prompt_block()
+            if brief.source_hint_count > 0:
+                print(
+                    f"  📌 directive 合并: {brief.source_hint_count} hint → 1 brief "
+                    f"(P0×{len(brief.p0_must)} P1×{len(brief.p1_should)} "
+                    f"forbidden×{len(brief.p3_forbidden)} conflicts×{len(brief.conflicts_log)})"
+                )
+        except Exception as _e:
+            try:
+                from persistence.checkpoint import add_progress_warning
+                add_progress_warning(
+                    level="warn",
+                    source=f"chapter:{chapter_index}:directive_consolidator",
+                    message=f"directive 合并失败,writer 走原 30+ 字段路径: {type(_e).__name__}: {str(_e)[:120]}",
+                )
+            except Exception:
+                pass
+            print(f"  ⚠ directive 合并失败(不阻塞):{type(_e).__name__}: {_e}")
         return directive
 
     def _build_character_states_for_chapter(self, chapter_index: int, volume_index: int) -> dict:
@@ -3452,27 +3844,6 @@ class DirectorAgent:
     def _dump_protagonist_journey(self) -> dict:
         j = self.state.protagonist_journey
         return {
-            "overall_theme": j.overall_theme,
-            "core_wound": j.core_wound,
-            "true_goal": j.true_goal,
-            "fatal_flaw": j.fatal_flaw,
-            "central_conflict": j.central_conflict,
-            "growth_arc": j.growth_arc,
-            "milestones": [
-                {
-                    "volume": m.volume,
-                    "entry_state": m.entry_state,
-                    "exit_state": m.exit_state,
-                    "inner_growth": m.inner_growth,
-                    "outer_change": m.outer_change,
-                    "key_relationships": m.key_relationships,
-                    "inner_conflict": m.inner_conflict,
-                    "hardest_choice": m.hardest_choice,
-                    "darkest_moment": m.darkest_moment,
-                    "triumph_moment": m.triumph_moment,
-                }
-                for m in j.milestones
-            ],
             "stage_beats": [
                 {
                     "beat_id": b.beat_id, "stage_id": b.stage_id, "volume": b.volume,
@@ -3551,11 +3922,10 @@ class DirectorAgent:
         print(f"  势力：{len(self.state.factions)} 个  |  全局线：{len(self.state.global_lines)} 条  |  卷内线：{len(self.state.volume_lines)} 条")
         print(f"  爽点：{len(self.state.satisfaction_points)} 个  |  伏笔：{len(self.state.foreshadow_items)} 个")
         web = self.state.relationship_web
-        j = self.state.protagonist_journey
         print(f"  关系网：{len(web.bonds)} 条  |  机缘：{len(self.state.fortunes)} 个")
-        if j.overall_theme:
-            print(f"  主角主题：{j.overall_theme}")
-            print(f"  核心矛盾：{j.central_conflict}")
+        mo = getattr(self.state, "master_outline", None)
+        if mo and getattr(mo, "thematic_core", ""):
+            print(f"  故事主题：{mo.thematic_core[:80]}")
         print("\n  卷结构：")
         for v in self.state.volumes:
             realm = self.state.power_system.protagonist_realm_plan.get(v.index, "?") if self.state.power_system else "?"

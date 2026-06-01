@@ -120,6 +120,12 @@ def refine_major_characters(state: NovelState) -> None:
   - speech_taboo：绝不会说的话类型 2-4 条
   - speech_under_anger/fear/joy：三种情绪下的语言变化（各 20 字）
   - sentence_length_preference：句式偏好
+- 【出场首秀镜头】
+  - first_appearance_signature：本角色**第一次登场时**让读者一眼记住的具体画面(60-80 字)。
+    必含 3 要素：一个具体动作 + 一个外貌/感官细节 + 一句标志性台词或姿态。
+    例：「他站在屋檐下时雨水正好滴在剑鞘上,左手永远扶着腰间那枚断裂的玉佩,
+        见来人只挑眉问:你也是来送死的?」
+    不要写抽象描述（如"气质冷峻""神态从容"）,要给具体动作+具体细节。
 
 输出 JSON：
 {{
@@ -135,7 +141,8 @@ def refine_major_characters(state: NovelState) -> None:
   "speech_under_anger": "...",
   "speech_under_fear": "...",
   "speech_under_joy": "...",
-  "sentence_length_preference": "..."
+  "sentence_length_preference": "...",
+  "first_appearance_signature": "..."
 }}
 """
         data = request_json(
@@ -172,6 +179,7 @@ def refine_major_characters(state: NovelState) -> None:
         char.speech_under_fear = data.get("speech_under_fear", "")
         char.speech_under_joy = data.get("speech_under_joy", "")
         char.sentence_length_preference = data.get("sentence_length_preference", "")
+        char.first_appearance_signature = (data.get("first_appearance_signature") or "").strip()
         print(f"  ✓ {char.name}（{char.role.value}）")
         if char.signature_mannerisms:
             print(f"      动作：{' / '.join(char.signature_mannerisms[:2])}")

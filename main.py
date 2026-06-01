@@ -1,6 +1,18 @@
 import sys
 import os
 
+if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+    _DLL_DIRECTORY_HANDLES = []
+    for _dll_dir in (
+        os.path.join(sys.prefix, "Library", "bin"),
+        os.path.join(sys.prefix, "DLLs"),
+    ):
+        if os.path.isdir(_dll_dir):
+            try:
+                _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(_dll_dir))
+            except OSError:
+                pass
+
 # 在 import 任何会读路径的模块之前，先根据 --project / 环境变量固定项目
 # （project_context 在 import 时读 XIAOSHUO_PROJECT_ID；这里额外支持命令行参数）
 _proj_arg = None
@@ -15,6 +27,13 @@ if _proj_arg:
     os.environ["XIAOSHUO_PROJECT_ID"] = _proj_arg
 
 from project_mgmt import project_context  # 触发路径初始化
+
+# CLI 路径也必须和 Web 一样加载用户 prompt 覆盖，否则同一项目两种入口会跑出两套提示词。
+try:
+    from utils import prompts_registry
+    prompts_registry.apply_all_overrides()
+except Exception as e:
+    print(f"[startup] 应用 prompt 覆盖失败（不影响启动）：{type(e).__name__}: {e}")
 
 from core.director import DirectorAgent
 

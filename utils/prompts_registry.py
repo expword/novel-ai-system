@@ -183,21 +183,32 @@ _REGISTRY_SPEC: list[tuple[str, tuple[str, str, str, str, str]]] = [
                        "前 3 章设计蓝图时使用的变体——强调情绪入口/信息稀疏/身份切换整幕。"
                        "可用变量：{genre}")),
 
-    # 黄金三章独立 system —— 卷 1 章 1/2/3 专用,每章独立硬约束
-    ("章节原型·黄金三章", ("agents.prompt_variants:WRITER_SYSTEM_GOLDEN_ONE",
-                            "agents.prompt_variants", "WRITER_SYSTEM_GOLDEN_ONE",
-                            "Writer System(黄金第 1 章)",
-                            "卷 1 第 1 章专用——首句勾人 + 前 200 字出现核心困境/金手指端倪/未解之谜。"
+    # 开篇 10 章 3 阶段独立 system —— 卷 1 ch 1-10,取代旧"黄金 3 章"教条
+    ("章节原型·开篇 3 阶段", ("agents.prompt_variants:WRITER_SYSTEM_OPENING_KICK_OFF",
+                                "agents.prompt_variants", "WRITER_SYSTEM_OPENING_KICK_OFF",
+                                "Writer System(开篇·钩人期 1-3 章)",
+                                "卷 1 ch 1-3 钩人期——立主角处境/情绪入口/反常细节;不强制金手指出场。"
+                                "可用变量：{genre}")),
+    ("章节原型·开篇 3 阶段", ("agents.prompt_variants:WRITER_SYSTEM_OPENING_ESTABLISH",
+                                "agents.prompt_variants", "WRITER_SYSTEM_OPENING_ESTABLISH",
+                                "Writer System(开篇·立住期 4-7 章)",
+                                "卷 1 ch 4-7 立住期——主角驱动力浮出/世界规则展开/长线钩子。"
+                                "可用变量：{genre}")),
+    ("章节原型·开篇 3 阶段", ("agents.prompt_variants:WRITER_SYSTEM_OPENING_MAIN_LINE",
+                                "agents.prompt_variants", "WRITER_SYSTEM_OPENING_MAIN_LINE",
+                                "Writer System(开篇·入主线期 8-10 章)",
+                                "卷 1 ch 8-10 入主线期——主线方向感/第一次不可逆选择/阶段性胜利或代价。"
+                                "可用变量：{genre}")),
+    # P1-4: 卷首/卷末专项 prompt
+    ("章节原型·卷过渡", ("agents.prompt_variants:WRITER_SYSTEM_VOLUME_OPENER",
+                            "agents.prompt_variants", "WRITER_SYSTEM_VOLUME_OPENER",
+                            "Writer System(新卷开篇章)",
+                            "卷 ≥2 的卷首章——上卷余波承接 + 新阶段定位 + 新钩子。"
                             "可用变量：{genre}")),
-    ("章节原型·黄金三章", ("agents.prompt_variants:WRITER_SYSTEM_GOLDEN_TWO",
-                            "agents.prompt_variants", "WRITER_SYSTEM_GOLDEN_TWO",
-                            "Writer System(黄金第 2 章)",
-                            "卷 1 第 2 章专用——第一个小爽 + 主角主动行动 + 埋追读 30 章的新谜团。"
-                            "可用变量：{genre}")),
-    ("章节原型·黄金三章", ("agents.prompt_variants:WRITER_SYSTEM_GOLDEN_THREE",
-                            "agents.prompt_variants", "WRITER_SYSTEM_GOLDEN_THREE",
-                            "Writer System(黄金第 3 章)",
-                            "卷 1 第 3 章专用——第一个大爽 + 主线启动 + 拍案级钩子(reversal/info_reveal/death)。"
+    ("章节原型·卷过渡", ("agents.prompt_variants:WRITER_SYSTEM_VOLUME_FINALE",
+                            "agents.prompt_variants", "WRITER_SYSTEM_VOLUME_FINALE",
+                            "Writer System(卷末章)",
+                            "卷末章——情感收束 + 冲突阶段性解决 + 下卷悬念铺设。"
                             "可用变量：{genre}")),
 
     # 章后审计 —— 能力/金手指使用合理性

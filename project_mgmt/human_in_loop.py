@@ -166,6 +166,77 @@ def gate_volume_start(state, volume_index: int, vol_summary: dict, mode: str = "
     )
 
 
+def gate_volume_end(state, volume_index: int, vol_review: dict, mode: str = "pause") -> bool:
+    """整卷写完后复盘——决定进入下一卷或回去改本卷。
+
+    payload 应含:
+      · chapter_count          本卷章数
+      · avg_critic_score       平均 critic 评分
+      · hook_diversity         本卷钩子多样性比例
+      · open_loops_count       本卷遗留开放循环数
+      · satisfaction_triggered 本卷触发爽点数
+      · key_warnings_count     本卷待解 warnings 数
+      · summary_notes          volume_reviewer 给出的本卷复盘要点
+    """
+    return request_approval(
+        state,
+        reason=f"卷{volume_index}整卷复盘审核",
+        trigger_phase=f"volume_{volume_index}_end",
+        payload=vol_review,
+        mode=mode,
+    )
+
+
+def gate_critic_unrecoverable(state, chapter_index: int, last_score: float, last_feedback: str, mode: str = "pause") -> bool:
+    """章节 critic revise 跑满仍不通过——让作者决定接受/手改/重生。
+
+    防"修了 N 轮还是不过的稿"被默默接受。
+    """
+    return request_approval(
+        state,
+        reason=f"第{chapter_index}章 critic 反复不通过(末轮={last_score})——作者拍板",
+        trigger_chapter=chapter_index,
+        payload={"last_score": last_score, "last_feedback": last_feedback[:500]},
+        mode=mode,
+    )
+
+
+def gate_pov_critical_residual(state, chapter_index: int, violations: list, mode: str = "pause") -> bool:
+    """主角 POV 破绽 critical 残留——不可逆破坏代入感,作者必须看。"""
+    return request_approval(
+        state,
+        reason=f"第{chapter_index}章主角 POV 破绽 critical 残留({len(violations)} 处)",
+        trigger_chapter=chapter_index,
+        payload={"violations": violations[:5]},
+        mode=mode,
+    )
+
+
+def gate_canon_critical_residual(state, chapter_index: int, issues: list, mode: str = "pause") -> bool:
+    """canon-revise 跑满仍残留 critical——作者决定接受还是手改。"""
+    return request_approval(
+        state,
+        reason=f"第{chapter_index}章 canon critical 残留({len(issues)} 处)",
+        trigger_chapter=chapter_index,
+        payload={"issues": issues[:5]},
+        mode=mode,
+    )
+
+
+def gate_master_antagonist(state, antagonist_summary: dict, mode: str = "pause") -> bool:
+    """大反派身份/动机确认——Phase 0.5 master_outline 后。
+
+    决定全书结局走向,埋下去就难撤。
+    """
+    return request_approval(
+        state,
+        reason="大反派身份/动机确认 (Phase 0.5)",
+        trigger_phase="master_antagonist",
+        payload=antagonist_summary,
+        mode=mode,
+    )
+
+
 def gate_breakthrough(state, chapter_index: int, realm_from: str, realm_to: str, mode: str = "pause") -> bool:
     """主角跨大境界必须人审。"""
     return request_approval(

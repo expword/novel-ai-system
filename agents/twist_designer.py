@@ -204,7 +204,10 @@ def _design_chain_seeds(state: NovelState) -> dict:
     # Phase 2.2:thread-local user_feedback 注入
     from utils.feedback_helper import get_user_feedback_prefix
     feedback_prefix = get_user_feedback_prefix()
-    prompt = f"""{feedback_prefix}
+    # 用户创作意图（world_tone_hint / avoid_tropes_hints）
+    from utils.intent_helper import build_intent_brief
+    intent_brief = build_intent_brief(state, "twist_designer")
+    prompt = f"""{feedback_prefix}{intent_brief}
 为《{state.title}》（题材：{state.genre}）设计【层层反转】的骨架。
 
 {ctx}

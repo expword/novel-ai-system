@@ -89,6 +89,9 @@ class CircuitBreaker:
         self._failure_count = 0
         self._opened_at = 0.0
         self._lock = threading.Lock()
+        # 最近失败的错误摘要——用于熔断打开时把根因附进 progress_warning，
+        # 让前端 ⚠ 徽章能直接显示"为什么熔断了"，不必去翻 stdout.log。
+        self._recent_errors: deque[tuple[str, str]] = deque(maxlen=10)  # (error_type, short_msg)
 
     def can_proceed(self) -> bool:
         with self._lock:
@@ -105,22 +108,73 @@ class CircuitBreaker:
 
     def record_success(self):
         with self._lock:
-            if self._state != self.CLOSED:
-                print(f"  [CB] 熔断器恢复：CLOSED")
+            was_open = self._state != self.CLOSED
             self._state = self.CLOSED
             self._failure_count = 0
+            self._recent_errors.clear()
+        if was_open:
+            print(f"  [CB] 熔断器恢复：CLOSED")
+            # 通知前端徽章消失
+            try:
+                from persistence.checkpoint import (
+                    clear_progress_warnings,
+                    add_progress_warning,
+                )
+                clear_progress_warnings(source="llm:circuit_breaker")
+                add_progress_warning(
+                    level="info",
+                    source="llm:circuit_breaker",
+                    message="LLM 熔断器已恢复——试探请求成功，恢复正常调度",
+                )
+            except Exception:
+                pass
 
     def record_failure(self, err: Exception = None):
+        # 先在锁内更新状态，记录是否发生 CLOSED→OPEN 转换
         with self._lock:
             self._failure_count += 1
+            if err is not None:
+                self._recent_errors.append(
+                    (type(err).__name__, str(err)[:120].replace("\n", " "))
+                )
+            transition_to_open = False
             if self._state == self.HALF_OPEN or self._failure_count >= self.threshold:
                 if self._state != self.OPEN:
-                    print(
-                        f"  [CB] 熔断器打开（连续 {self._failure_count} 次失败）"
-                        f"——拒绝新请求 {self.cooldown:.0f} 秒"
-                    )
+                    transition_to_open = True
                 self._state = self.OPEN
                 self._opened_at = time.monotonic()
+            # 拍一份快照在锁外用
+            snap_errors = list(self._recent_errors)
+            snap_failure_count = self._failure_count
+            snap_cooldown = self.cooldown
+
+        if transition_to_open:
+            # 拼错误类型计数 + 最后一条错误的简短文本
+            from collections import Counter
+            type_counts = Counter(t for t, _ in snap_errors)
+            type_summary = " / ".join(
+                f"{t} x{c}" for t, c in type_counts.most_common(4)
+            )
+            last_msg = snap_errors[-1][1] if snap_errors else ""
+            print(
+                f"  [CB] 熔断器打开（连续 {snap_failure_count} 次失败）"
+                f"——拒绝新请求 {snap_cooldown:.0f} 秒；最近错误：{type_summary}"
+            )
+            # 写 progress_warning——让前端 ⚠ 徽章看到熔断事件 + 根因
+            try:
+                from persistence.checkpoint import add_progress_warning
+                add_progress_warning(
+                    level="error",
+                    source="llm:circuit_breaker",
+                    message=(
+                        f"LLM 熔断器打开：连续 {snap_failure_count} 次失败，"
+                        f"冷却 {snap_cooldown:.0f}s 内拒绝新请求。"
+                        f"最近错误类型：{type_summary or '未知'}"
+                        + (f"；最后一次：{last_msg}" if last_msg else "")
+                    ),
+                )
+            except Exception:
+                pass
 
     @property
     def state(self) -> str:
@@ -249,9 +303,18 @@ class LLMPool:
             self._semaphore.release()
 
     def stats(self) -> dict:
+        # 最近失败摘要——让前端能看到熔断的"根因画像"
+        from collections import Counter
+        with self._circuit._lock:
+            recent = list(self._circuit._recent_errors)
+        type_counts = Counter(t for t, _ in recent)
         return {
             **self._stats.snapshot(),
             "circuit_state": self._circuit.state,
+            "circuit_recent_errors": [
+                {"type": t, "msg": m} for t, m in recent[-5:]
+            ],
+            "circuit_error_type_counts": dict(type_counts.most_common(6)),
             "max_concurrent": self.max_concurrent,
             "rate_limit_rpm": self.rate_limit_rpm,
         }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>小说生成器 · 可视化编辑器</title>
-<link rel="stylesheet" href="/static/style.css?v=20260425-startbtn">
+<link rel="stylesheet" href="/static/style.css?v=20260524-review-pretty">
 <!-- 本地 Alpine（核心框架，必须同步加载）；若本地文件不存在浏览器会自动 404 后前端静默 fallback 不了，所以失败时直接改回 CDN -->
 <script defer src="/static/vendor/alpine.min.js"
         onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js'"></script>
@@ -1275,6 +1275,13 @@
                     <div class="plot-supplement-card"
                          :class="ps.adopted === true ? 'ps-adopted' : (ps.adopted === false ? 'ps-rejected' : 'ps-pending')">
                       <div class="ps-head">
+                        <span class="ps-kind"
+                              :class="'ps-kind-' + (ps.kind || 'suspense')"
+                              x-text="({
+                                  suspense:'🔍 悬念', emotional:'💗 情感', philosophical:'💭 哲理',
+                                  humorous:'😄 趣味', moving:'😢 感人', setting_payoff:'💥 设定爆点',
+                                  relationship_twist:'🔀 关系反转', signature_detail:'✨ 微设定'
+                              })[ps.kind] || '🔍 悬念'"></span>
                         <span class="ps-intensity"
                               :class="'ps-int-' + (ps.intensity || 'mid')"
                               x-text="({low:'[暗线]', mid:'[主线钩子]', high:'[核心爆点]'})[ps.intensity] || '[主线钩子]'"></span>
@@ -2562,27 +2569,19 @@
           </div>
         </template>
 
-        <!-- Protagonist Journey -->
+        <!-- Protagonist Journey（仅 stage_beats，原 6 字段 + milestones 已删）-->
         <template x-if="current==='protagonist_journey'">
           <div class="card">
-            <h3><span x-text="data.overall_theme"></span></h3>
-            <div class="row">
-              <div><label>核心创伤</label><p x-text="data.core_wound"></p></div>
-              <div><label>真实目标</label><p x-text="data.true_goal"></p></div>
-            </div>
-            <div class="row">
-              <div><label>致命弱点</label><p x-text="data.fatal_flaw"></p></div>
-              <div><label>核心矛盾</label><p x-text="data.central_conflict"></p></div>
-            </div>
-            <h4>卷级里程碑</h4>
-            <template x-for="m in data.milestones||[]" :key="m.volume">
+            <h4>舞台节拍 <small class="dim" x-text="'共 '+((data.stage_beats||[]).length)+' 条'"></small></h4>
+            <template x-for="b in data.stage_beats||[]" :key="b.beat_id">
               <div class="milestone">
-                <strong x-text="'第'+m.volume+'卷'"></strong>
-                <p><b>入：</b><span x-text="m.entry_state"></span></p>
-                <p><b>出：</b><span x-text="m.exit_state"></span></p>
-                <p>最艰难选择：<span x-text="m.hardest_choice"></span></p>
+                <strong x-text="'V'+b.volume+'·'+b.milestone_phase+'·'+b.stage_id"></strong>
+                <p><b>入：</b><span x-text="b.entry_state"></span></p>
+                <p><b>出：</b><span x-text="b.exit_state"></span></p>
+                <p>获得：<span x-text="b.gained"></span>｜失去：<span x-text="b.lost"></span></p>
               </div>
             </template>
+            <div class="dim" x-show="!(data.stage_beats||[]).length">暂无舞台节拍（卷级写作时会逐卷生成）</div>
           </div>
         </template>
 
@@ -3042,7 +3041,7 @@
               <template x-if="!reviewModal.tabData[reviewModal.activeTab].loading
                               && reviewModal.tabData[reviewModal.activeTab].data !== null
                               && (!activeCandidates() || !activeCandidates().drafts.length)">
-                <pre class="rm-data-pre" x-text="formatReviewData(reviewModal.tabData[reviewModal.activeTab].data)"></pre>
+                <div class="rmp-root" x-html="renderPretty(reviewModal.tabData[reviewModal.activeTab].data)"></div>
               </template>
 
               <!-- 错误 -->
@@ -3071,7 +3070,7 @@
                       弃全部
                     </button>
                   </div>
-                  <pre class="rm-data-pre" x-text="formatReviewData(activeCandidatePayload())"></pre>
+                  <div class="rmp-root" x-html="renderPretty(activeCandidatePayload())"></div>
                 </div>
               </template>
 
@@ -3645,6 +3644,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=20260425-startbtn"></script>
+<script src="/static/app.js?v=20260525-rollback-fix"></script>
 </body>
 </html>

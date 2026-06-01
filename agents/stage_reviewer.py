@@ -143,14 +143,29 @@ expression（想让读者感受）：{stage.expression}
 }}
 没问题就输出 {{"issues": []}}。"""
 
-    data = request_json(
-        system=SYSTEM, user=prompt,
-        required_keys=["issues"],
-        max_retries=3, temperature=0.4,
-        agent_name=f"StageReviewer[{stage_id}]",
-        empty_ok=True,
-    )
+    # empty_ok=False——审核服务故障时必须让 caller 看到，不能静默"通过"
+    try:
+        data = request_json(
+            system=SYSTEM, user=prompt,
+            required_keys=["issues"],
+            max_retries=3, temperature=0.4,
+            agent_name=f"StageReviewer[{stage_id}]",
+            empty_ok=False,
+        )
+    except Exception as _e:
+        from persistence.checkpoint import add_progress_warning
+        add_progress_warning(
+            level="error",
+            source=f"stage:{stage_id}:reviewer",
+            message=(
+                f"Stage [{stage_id}] 审核服务故障（{type(_e).__name__}: {str(_e)[:120]}）"
+                "——本 stage 未通过 LLM 审核就放行了；请检查审核模型/key 并酌情人工复审"
+            ),
+        )
+        print(f"  ❌ [stage_reviewer] {stage_id} 审核失败：{type(_e).__name__}: {_e}")
+        return []
     if not data:
+        # request_json empty_ok=False 已经会 raise；走到这里说明 LLM 真的返回 {} 通过校验
         return []
     issues = []
     for item in (data.get("issues") or []):

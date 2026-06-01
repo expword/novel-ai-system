@@ -129,7 +129,10 @@ def _plan_volume_fortunes(state: NovelState, vol, prot_name: str, realm_plan: di
     # Phase 2.2:thread-local user_feedback 注入
     from utils.feedback_helper import get_user_feedback_prefix
     feedback_prefix = get_user_feedback_prefix()
-    prompt = f"""{feedback_prefix}
+    # 用户创作意图（preferred_sp_types_hints / avoid_tropes_hints / world_tone_hint）
+    from utils.intent_helper import build_intent_brief
+    intent_brief = build_intent_brief(state, "fortune_planner")
+    prompt = f"""{feedback_prefix}{intent_brief}
 为主角【{prot_name}】在第{vol.index}卷《{vol.title}》规划【{fortune_term}】——3-5 个即可。
 
 【体系类型】{sys_type}

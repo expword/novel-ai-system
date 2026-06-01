@@ -23,7 +23,7 @@ from persistence.state import (
     ChapterSummary, StoryThread, OpenLoop,
     Fortune, SubScene, StoryStage,
     CharacterBond, RelationshipWeb,
-    ProtagonistMilestone, ProtagonistStageBeat, ProtagonistJourney,
+    ProtagonistStageBeat, ProtagonistJourney,
     BookStructurePlan,
     ConceptPitch, TropeLibrary, ToneManual, CreativeIntent, IntentRevision,
     PlotSupplement,
@@ -658,21 +658,6 @@ def _load_relationship_web(d: dict) -> RelationshipWeb:
     return web
 
 
-def _load_protagonist_milestone(d: dict) -> ProtagonistMilestone:
-    return ProtagonistMilestone(
-        volume=d.get("volume", 1),
-        entry_state=d.get("entry_state", ""),
-        exit_state=d.get("exit_state", ""),
-        inner_growth=d.get("inner_growth", ""),
-        outer_change=d.get("outer_change", ""),
-        key_relationships=d.get("key_relationships", []),
-        inner_conflict=d.get("inner_conflict", ""),
-        hardest_choice=d.get("hardest_choice", ""),
-        darkest_moment=d.get("darkest_moment", ""),
-        triumph_moment=d.get("triumph_moment", ""),
-    )
-
-
 def _load_protagonist_stage_beat(d: dict) -> ProtagonistStageBeat:
     return ProtagonistStageBeat(
         beat_id=d.get("beat_id", ""),
@@ -689,14 +674,9 @@ def _load_protagonist_stage_beat(d: dict) -> ProtagonistStageBeat:
 
 
 def _load_protagonist_journey(d: dict) -> ProtagonistJourney:
+    # 老存档（含 overall_theme / core_wound / milestones 等已删字段）会被 dict.get
+    # 默默忽略——dataclass 已精简，不接受这些 kwarg
     return ProtagonistJourney(
-        overall_theme=d.get("overall_theme", ""),
-        core_wound=d.get("core_wound", ""),
-        true_goal=d.get("true_goal", ""),
-        fatal_flaw=d.get("fatal_flaw", ""),
-        central_conflict=d.get("central_conflict", ""),
-        growth_arc=d.get("growth_arc", ""),
-        milestones=[_load_protagonist_milestone(m) for m in d.get("milestones", [])],
         stage_beats=[_load_protagonist_stage_beat(b) for b in d.get("stage_beats", [])],
     )
 
@@ -924,6 +904,7 @@ def _load_creative_intent(d: dict) -> CreativeIntent:
                 why_engaging=p.get("why_engaging", ""),
                 where_to_inject=p.get("where_to_inject", ""),
                 intensity=p.get("intensity", "mid"),
+                kind=p.get("kind", "suspense"),
                 adopted=p.get("adopted", None),
                 notes=p.get("notes", ""),
             )

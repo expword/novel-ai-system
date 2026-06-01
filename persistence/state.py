@@ -472,6 +472,9 @@ class ForeshadowItem:
     activation_chapter: int = -1    # 读者开始注意到的章（第一次明显提醒）
     activation_sign: str = ""       # 激活时的具体表现（30字）
     resolution_quality: str = ""    # 回收效果评价（回收后填，20字：震撼/意料之中/生硬等）
+    # ── ForeshadowExposureTracker 累计暴露度（章后扫稿+LLM 判定）─────
+    # 提及+1 / 暗示+1 / 强烈暗示+2;达 EXPOSURE_THRESHOLD → progress_warning
+    exposure_count: int = 0
 
 
 @dataclass
@@ -763,6 +766,10 @@ class Character:
     defining_memory: str = ""                                       # 塑造其人的一段关键记忆（40字）
     secret_desire: str = ""                                         # 从不承认的渴望（30字）
     contrast_with_protagonist: str = ""                             # 和主角的世界观/做事方式有什么对比或张力（30字，主角填"—"）
+    # ── P1-2 出场首秀镜头（首次登场时让读者一眼记住的具体画面 60-80 字）──
+    # 必含: 一个具体动作 + 一个外貌/感官细节 + 一句标志性台词或姿态
+    # 例:「他站在屋檐下时雨水正好滴在剑鞘上,左手永远扶着腰间那枚断裂的玉佩,见来人只挑眉问:你也是来送死的?」
+    first_appearance_signature: str = ""
     # ── VoiceProfile 语言指纹（writer 对话一致性的硬依据）──────
     high_freq_vocab: list[str] = field(default_factory=list)       # 高频词汇（3-5个，配合 verbal_tics）
     speech_taboo: list[str] = field(default_factory=list)          # 这个角色绝对不会说的话类型（如"粗口""文言""自谦之词"，2-4条）
@@ -1029,6 +1036,20 @@ class SceneBeat:
     # 5-8 个感官细节候选（视/听/嗅/触/内感），写在 20-35 字内（如"门开缝漏出半寸烛光，带着松烟的焦味"）
     dramatic_beats: list[str] = field(default_factory=list)
     # 0-3 个戏剧节拍标记（15-25 字，如"主角抬手按住她的肩——但手停在半寸外"）
+    # ── P1-3 段落比例指引(防节奏失控) ───────────────────────
+    # {dialogue, action, inner, desc} 总和 = 100,如 {"dialogue":40,"action":30,"inner":20,"desc":10}
+    # chapter_planner 按场景类型给(对峙幕高 dialogue,战斗幕高 action,独白幕高 inner)
+    # writer 在 prompt 中按比例分配段落,不再凭直觉
+    paragraph_mix: dict = field(default_factory=dict)
+    # ── P0-2 情绪余波(承接上一幕末的情绪具体表现) ──────────────────
+    # 例: "他手指仍在微微发抖,刚才那一刀的反震还停留在手腕"
+    # 不是抽象"延续紧张",是具体可感的身体/感官/思绪余波
+    emotional_residue_from_prev: str = ""
+    # ── P0-5 情绪压差校验(防"连续抑郁"/"连续高潮") ────────────
+    # -10(深渊绝望) → 0(平静) → +10(极致高潮);chapter_planner 填
+    # validator 检查相邻幕台阶是否合理(连续 3 幕都是 -8 以下 = 读者抑郁)
+    entry_emotion: int = 0          # 本幕入场时主角情绪值
+    exit_emotion: int = 0           # 本幕末主角情绪值
 
 
 @dataclass
@@ -1057,6 +1078,11 @@ class ChapterBlueprint:
     expression: str = ""       # 本章想表达什么（30字，主题/情绪/信息）
     # ── 钩子类型（Batch 3：防钩子单一化收敛）────────────────
     closing_hook_spec: Optional[HookSpec] = None  # 钩子类型 + 描述,空时降级到 closing_hook 字符串
+    # ── P0-3 章末二钩(情感回响层) ─────────────────────────
+    # closing_hook 是主钩(悬念/反转/物理/...);secondary 是配套情感回响钩
+    # 例: 主钩="反派一句话颠覆主角认知";二钩="主角看着月亮想起母亲那句话"
+    # 两钩必须不同类型(否则不算二钩,critic 扣分)
+    closing_hook_secondary: str = ""
 
 @dataclass
 class ChapterDirective:
@@ -1098,6 +1124,15 @@ class ChapterDirective:
     callback_seeds: list[str] = field(default_factory=list)  # 格式: "[kind·第N章·counterpart] 「quote」 — summary"
     # ── 读者预期(Batch 5:expectation_manager 写章前预测,chapter_planner 标 decision)──
     reader_expectations: list[ReaderExpectation] = field(default_factory=list)
+    # ── DirectiveConsolidator 渲染的「北极星」brief（writer prompt 顶部读这段）──
+    # 由 director._generate_directive 末尾用 agents.directive_consolidator.consolidate 填充
+    # 非空时 writer 应优先按这段执行（30+ 字段的优先级化总览）
+    consolidated_brief: str = ""
+    # ── ChapterHookDesigner 决定的章末钩子类型（critic.hook_type_compliance 校验）──
+    closing_hook_type: str = ""
+    # ── LengthGovernor 按 platform + chapter_type 推算的本章目标字数 ──
+    # 0 = 未填,director 走 config.WORDS_PER_CHAPTER 兜底
+    target_words: int = 0
 
 
 @dataclass
@@ -1142,6 +1177,9 @@ class ChapterSummary:
     # ── critic 最后一轮评分快照(Batch P2:UI 可视化用,不参与逻辑)─────
     # 含 score / passed / dim_scores(10+ 维) / sp_check / fw_check / feedback / highlights
     critic_review: dict = field(default_factory=dict)
+    # ── QuotableExtractor 章后挖出的金句/可截图段(下章 writer 可注入参考)─────
+    # list[dict{kind, text, reason, impact_score}]
+    quotable_moments: list = field(default_factory=list)
 
 
 # ═══════════════════════════════════════════════════════
@@ -1355,33 +1393,6 @@ class RelationshipWeb:
 # ═══════════════════════════════════════════════════════
 
 @dataclass
-class ProtagonistMilestone:
-    """
-    主角在某一卷的核心里程碑。
-    描述卷首→卷尾的状态变化，不规定具体章节。
-    """
-    volume: int
-    # 卷首状态（情感/力量/处境）
-    entry_state: str
-    # 卷尾状态
-    exit_state: str
-    # 这一卷主角最重要的内心成长
-    inner_growth: str
-    # 这一卷外部最重要的改变
-    outer_change: str
-    # 这一卷主角与哪些人产生了关键化学反应（可以是正向或负向）
-    key_relationships: list[str] = field(default_factory=list)
-    # 这一卷主角面临的核心内心冲突
-    inner_conflict: str = ""
-    # 这一卷主角被迫做出的最艰难选择（塑造人物的时刻）
-    hardest_choice: str = ""
-    # 主角卷内最低谷（让读者揪心的时刻）
-    darkest_moment: str = ""
-    # 主角卷内最高光（让读者爽的时刻）
-    triumph_moment: str = ""
-
-
-@dataclass
 class ProtagonistStageBeat:
     """
     主角在某个叙事舞台中的经历节拍。
@@ -1408,43 +1419,18 @@ class ProtagonistStageBeat:
 @dataclass
 class ProtagonistJourney:
     """
-    主角完整历程规划。
-    三层结构：整体弧线 → 卷级里程碑 → 舞台级节拍
+    主角历程规划。仅保留舞台级节拍——
+    原 6 字段（overall_theme/core_wound/true_goal/fatal_flaw/central_conflict/growth_arc）
+    + milestones 列表已删（2026-05-25 审计为零下游消费）。
     """
-    # 整体弧线
-    overall_theme: str = ""         # 主角的故事主题（如"从孤儿到天下第一，寻找存在意义"）
-    core_wound: str = ""            # 驱动主角前进的根源创伤
-    true_goal: str = ""             # 主角真正追求的（可能与表面目标不同）
-    fatal_flaw: str = ""            # 主角会反复被这个弱点阻碍
-    # 主角与命运/反派的核心矛盾
-    central_conflict: str = ""
-    # 全书主角的成长轨迹（一段话）
-    growth_arc: str = ""
-
-    # 卷级里程碑（每卷一个）
-    milestones: list[ProtagonistMilestone] = field(default_factory=list)
-
     # 舞台级节拍（每个叙事舞台一个）
     stage_beats: list[ProtagonistStageBeat] = field(default_factory=list)
-
-    def get_milestone(self, volume: int) -> Optional["ProtagonistMilestone"]:
-        for m in self.milestones:
-            if m.volume == volume:
-                return m
-        return None
 
     def get_stage_beat(self, stage_id: str) -> Optional["ProtagonistStageBeat"]:
         for b in self.stage_beats:
             if b.stage_id == stage_id:
                 return b
         return None
-
-    def milestone_brief(self, volume: int) -> str:
-        m = self.get_milestone(volume)
-        if not m:
-            return ""
-        return (f"[第{volume}卷] 入：{m.entry_state} → 出：{m.exit_state}\n"
-                f"  内心成长：{m.inner_growth} | 最艰难选择：{m.hardest_choice}")
 
 
 # ═══════════════════════════════════════════════════════
@@ -1675,13 +1661,24 @@ class IntentRevision:
 class PlotSupplement:
     """
     plot_enhancer（Phase -0.7）产出的"补充情节建议"——让系统主动反问
-    "作者意图够不够吸引读者"，补 3-5 个钩子供作者审。
+    "作者意图够不够打动读者"，补 5-8 个钩子供作者审。
 
     采纳后下游 agent 必须落地：
       · satisfaction_system 把它转成具体爽点（payoff/setup）
       · foreshadow_manager 把它转成伏笔
       · twist_designer 把它转成反转层
       · volume_planner 引用到具体卷/章 outline
+      · 哲理/感人/趣味类钩子会被 writer / chapter_planner prompt 引用作为情感锚点
+
+    kind 八类（系统不仅补悬念，也补哲理/感人/趣味——让作品有层次）：
+      suspense           悬念钩子（让读者忍不住翻页的未解谜团）
+      emotional          情感锚点（让读者代入主角并产生强烈共鸣的场景）
+      philosophical      哲理钩子（让读者掩卷沉思的命题/抉择/悖论）
+      humorous           趣味反差（让读者会心一笑的反差/反套路时刻）
+      moving             感人时刻（让读者落泪的牺牲/和解/告别）
+      setting_payoff     设定爆点（揭开后扭转主角对世界认知的世界观真相）
+      relationship_twist 关系反转伏笔（与主角最近的某人最终意外转向）
+      signature_detail   微设定钩子（一句话能让读者记住整本书的标志性细节）
 
     intensity: low / mid / high —— 决定下游落地的强度（low=暗线伏笔；high=主线钩子）
     adopted: 作者是否采纳；None = 待审，True = 采纳，False = 拒绝
@@ -1691,6 +1688,7 @@ class PlotSupplement:
     why_engaging: str = ""          # 为什么这能让读者留下（40 字）
     where_to_inject: str = ""       # 建议注入到哪——卷/章范围（如"第 1 卷中段"）
     intensity: str = "mid"          # low / mid / high
+    kind: str = "suspense"          # 八类之一（见上方说明）
     adopted: Optional[bool] = None  # None 待审 / True 采纳 / False 拒绝
     notes: str = ""                 # 作者审核时加的备注
 
@@ -1937,6 +1935,9 @@ class AbilityUse:
     cost_paid: str                  # 付出的代价（30字，"无"=没付）
     setting_match: bool             # 是否符合设定边界
     notes: str = ""                 # auditor 备注（如"轻微超纲"）
+    # P1-1: 代价是否在正文显式描写(读者可见)
+    # false → ability_auditor 标 no_cost issue,触发 polisher
+    cost_explicit: bool = True
 
 
 @dataclass
@@ -2468,6 +2469,26 @@ class NovelState:
     # 主角实力章级日志：{chapter_index: {"realm": str, "key_means": [str], "recent_breakthrough": str}}
     # 每章后由 state_updater 回写——下章 writer 知道主角"此刻"能调用什么、近期是否升级
     protagonist_power_log: dict[int, dict] = field(default_factory=dict)
+    # ── POVChecker 维护：主角累积"已知事实"集合 ─────────
+    # list[dict{fact, source, learned_chapter}] —— 每章后由 pov_checker 抽取并追加
+    # 下章扫稿时对比集合,识别"超出已知范围的主角言行" → POV 破绽
+    protagonist_known_facts: list = field(default_factory=list)
+    # ── SupportingCastTracker 累积配角戏份统计 ──────────
+    # dict[name → {appear_count, chapter_appearances, last_seen_chapter, by_volume:{vol→count}, ...}]
+    # 章后纯规则扫 summary+key_events 更新;每 5 章触发"失踪/抢戏"阈值检查
+    supporting_cast_stats: dict = field(default_factory=dict)
+    # ── FeedbackIngestor 待消化的结构化反馈队列 ──────────
+    # list[{target_chapter_index, ingested:{scope/target_aspect/severity/actions...}, consumed: bool}]
+    # director._generate_directive 调 apply_to_directive 取本章命中项注入并 mark consumed
+    user_feedback_queue: list = field(default_factory=list)
+    # ── AntagonistLifecycleTracker:每个反派的 6 节点 lifecycle ──────────
+    # dict[antagonist_name → {antagonist_name, motivation_brief, threat_level, nodes:[6 节点 dict]}]
+    # 写章前自动按需设计;章后纯规则扫 summary 标 triggered + 检查搁置/秒杀
+    antagonist_lifecycles: dict = field(default_factory=dict)
+    # ── P0-4 读者疑问追踪:每章 long_term_cohesion 累积 ─────────
+    # list[{q, kind, raised_chapter, age}] —— age ≥ 3 章未回应 → 强制下章回应
+    # 防"读者明显会问但作者一直不答" → 弃书理由
+    reader_questions_pending: list = field(default_factory=list)
 
     # 元系统：术语表 / 版本索引 / 人工审核队列
     glossary: list["GlossaryEntry"] = field(default_factory=list)

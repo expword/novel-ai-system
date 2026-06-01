@@ -127,6 +127,19 @@ def process_chapter(state: NovelState, chapter_index: int, content: str) -> Chap
     for sp_id in data.get("sp_triggered", []):
         mark_sp_triggered(state, sp_id, chapter_index)
 
+    # 更新 lifecycle 节点 triggered/actual_chapter——
+    # 命中本章的 lifecycle 节点（target_chapter == 本章 + target_volume 匹配）自动 mark 已触发
+    # 避免 cohesion 报告把"已写章节里规划的节点"误报为过期未触发。
+    # chapter_cleanup 重写时会回退 triggered，所以双向都覆盖。
+    if state.power_system and state.power_system.special_abilities:
+        for asset in state.power_system.special_abilities:
+            for node in (asset.lifecycle_nodes or []):
+                if node.triggered:
+                    continue
+                if node.target_volume == volume_index and node.target_chapter == chapter_index:
+                    node.triggered = True
+                    node.actual_chapter = chapter_index
+
     # 更新伏笔状态
     update_after_chapter(
         state, chapter_index,

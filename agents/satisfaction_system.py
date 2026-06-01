@@ -112,7 +112,10 @@ def _plan_volume_sps(state: NovelState, vol) -> None:
     # Phase 2.2:thread-local user_feedback 注入
     from utils.feedback_helper import get_user_feedback_prefix
     feedback_prefix = get_user_feedback_prefix()
-    prompt = f"""{feedback_prefix}
+    # 用户创作意图（preferred_sp_types_hints / avoid_tropes_hints / embrace_tropes_hints）
+    from utils.intent_helper import build_intent_brief
+    intent_brief = build_intent_brief(state, "satisfaction_system")
+    prompt = f"""{feedback_prefix}{intent_brief}
 为《{state.title}》第{vol.index}卷《{vol.title}》规划爽点——3-5 个即可。
 
 {concept_block}{sp_pref_hint}
@@ -195,6 +198,56 @@ def _plan_volume_sps(state: NovelState, vol) -> None:
         state.satisfaction_points.append(sp)
     count_after = len([sp for sp in state.satisfaction_points if sp.volume == vol.index])
     print(f"    第{vol.index}卷爽点：+{count_after - count_before} 个")
+
+    # P1-4: payoff_description 具体度校验 (本卷新加爽点)
+    try:
+        from persistence.checkpoint import add_progress_warning
+        new_sps = [sp for sp in state.satisfaction_points if sp.volume == vol.index][-(count_after - count_before):]
+        for sp in new_sps:
+            issue = _check_payoff_concreteness(sp.payoff_description)
+            if issue:
+                add_progress_warning(
+                    level="warn",
+                    source=f"sp:{sp.sp_id}.payoff_concreteness",
+                    message=(
+                        f"爽点 [{sp.title}] (V{sp.volume}Ch{sp.target_chapter}) "
+                        f"payoff_description 过抽象: {issue} "
+                        f"(payoff=「{sp.payoff_description[:60]}」) —— "
+                        "触发章 writer 拿到此 payoff 会写抽象,"
+                        "建议在 web UI 编辑此爽点加具体动作/台词/画面"
+                    ),
+                )
+    except Exception as _e:
+        print(f"  ⚠ 爽点 payoff 校验失败(不阻塞):{type(_e).__name__}: {_e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  P1-4: payoff_description 具体度校验
+# ═══════════════════════════════════════════════════════════════════
+
+_PAYOFF_ABSTRACT_LITERALS = {
+    "打脸", "反击", "突破", "揭穿", "复仇", "逆袭",
+    "主角打脸", "主角揭穿", "主角反击", "主角突破",
+    "完成复仇", "证明自己", "扬眉吐气", "扬眉",
+    "待定", "TODO", "todo",
+}
+
+
+def _check_payoff_concreteness(payoff: str):
+    """检查爽点 payoff_description 具体度。返回 issue,None=通过。
+
+    规则:
+    · 长度 < 20 字 → 抽象 (schema 要 50 字)
+    · 整句等于已知抽象套话 → 抽象
+    """
+    if not payoff:
+        return "payoff_description 为空"
+    s = payoff.strip()
+    if len(s) < 20:
+        return f"过短 ({len(s)} 字 < 20,缺具体动作/台词/画面)"
+    if s in _PAYOFF_ABSTRACT_LITERALS:
+        return f"整句为抽象套话「{s}」"
+    return None
 
 
 def get_sp_for_chapter(state: NovelState, chapter_index: int) -> dict:

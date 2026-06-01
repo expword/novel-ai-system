@@ -75,6 +75,13 @@ def _init_spec() -> dict:
         "trope_library":      ("trope_library",      "scalar", ck._load_trope_library, None),
         "tone_manual":        ("tone_manual",        "scalar", ck._load_tone_manual, None),
         "master_outline":     ("master_outline",     "scalar", ck._load_master_outline, None),
+        "world_canon":        ("world_canon",        "scalar", ck._load_world_canon, None),
+        "character_ability_profiles": (
+            "character_ability_profiles", "scalar",
+            lambda d: {n: ck._load_character_ability_profile(p) for n, p in (d or {}).items() if isinstance(p, dict)},
+            dict,
+        ),
+        "power_events":       ("power_events",       "list",   ck._load_power_event, None),
         "book_structure":     ("book_structure",     "scalar", ck._load_book_structure, None),
         "geography":          ("geography",          "scalar", ck._load_geography, None),
         "timeline":           ("timeline",           "scalar", ck._load_timeline, None),
@@ -186,11 +193,28 @@ def meta_file() -> str:
     return os.path.join(state_dir(), "meta.json")
 
 
+def _write_json_file(path: str, data: Any) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        os.replace(tmp, path)
+    except PermissionError:
+        # Windows 上目标文件偶发被短暂占用时，os.replace 会失败；直接覆盖可保证本次保存落盘。
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 # ═══════════════════════════════════════════════════════
 #  单 section 读写
 # ═══════════════════════════════════════════════════════
 
-def save_section(name: str, state: NovelState) -> None:
+def save_section(name: str, state: NovelState, *, preserve_power_assets_if_empty: bool = False) -> None:
     """只写一个 section 文件。线程安全。"""
     spec = _init_spec()
     if name not in spec:
@@ -199,26 +223,52 @@ def save_section(name: str, state: NovelState) -> None:
     state_attr, kind, _, _ = spec[name]
     value = getattr(state, state_attr, None)
 
-    # 转成可序列化的 dict / list
+    # 转成可序列化的 dict / list——支持嵌套 dataclass
+    def _to_serializable(v):
+        if v is None:
+            return None
+        if hasattr(v, "__dataclass_fields__"):
+            return asdict(v)
+        if isinstance(v, dict):
+            return {k: _to_serializable(vv) for k, vv in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [_to_serializable(x) for x in v]
+        return v
+
     data: Any
     if kind == "scalar":
         if value is None:
             data = {}
         else:
-            data = asdict(value) if hasattr(value, "__dataclass_fields__") else value
-            # Enum 反序列化——复用 checkpoint._to_json 的 Enum 处理
+            data = _to_serializable(value)
             data = _deep_unroll_enums(data)
     else:  # list
-        data = [asdict(v) if hasattr(v, "__dataclass_fields__") else v for v in (value or [])]
+        data = [_to_serializable(v) for v in (value or [])]
         data = _deep_unroll_enums(data)
+
+    if (
+        preserve_power_assets_if_empty
+        and name == "power_system"
+        and isinstance(data, dict)
+        and not getattr(state, "_explicit_power_system_put", False)
+    ):
+        incoming = data.get("special_abilities")
+        if not incoming:
+            path = section_file(name)
+            try:
+                if os.path.exists(path):
+                    with open(path, encoding="utf-8-sig") as f:
+                        old = json.load(f) or {}
+                    old_abs = old.get("special_abilities") or []
+                    if old_abs:
+                        data["special_abilities"] = old_abs
+                        print("  [state_storage] 保留磁盘中已有 special_abilities，避免后台旧 state 清空")
+            except Exception as e:
+                print(f"  [state_storage] special_abilities 保留检查失败：{type(e).__name__}: {e}")
 
     path = section_file(name)
     with _get_lock_for_section(name):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)  # 原子替换，防止半写文件
+        _write_json_file(path, data)
 
 
 def _deep_unroll_enums(obj):
@@ -246,7 +296,7 @@ def load_section(name: str, state: NovelState) -> bool:
 
     state_attr, kind, loader, _ = spec[name]
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             raw = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
         print(f"  [!] 读 section {name} 失败：{e}")
@@ -353,11 +403,7 @@ def save_meta(state: NovelState) -> None:
 
     path = meta_file()
     with _get_lock_for_section("_meta"):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        _write_json_file(path, meta)
 
 
 def load_meta(state: NovelState) -> bool:
@@ -367,7 +413,7 @@ def load_meta(state: NovelState) -> bool:
     if not os.path.exists(path):
         return False
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             meta = json.load(f)
     except (OSError, json.JSONDecodeError):
         return False
@@ -586,7 +632,7 @@ def save_split(state: NovelState) -> None:
     save_meta(state)
     for name in _init_spec():
         try:
-            save_section(name, state)
+            save_section(name, state, preserve_power_assets_if_empty=True)
         except Exception as e:
             print(f"  [!] 保存 section {name} 失败：{e}")
 

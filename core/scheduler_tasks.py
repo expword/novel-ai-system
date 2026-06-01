@@ -52,7 +52,6 @@ from agents.emotion_curve import design_emotion_curve
 from agents.foreshadow_manager import plan_all_foreshadowing
 from agents.twist_designer import design_twists
 from agents.fortune_planner import plan_all_fortunes
-from agents.protagonist_journey import plan_protagonist_journey
 from agents.stage_architect import design_volume_stages
 from agents.chapter_type_planner import plan_all_chapter_types
 
@@ -338,9 +337,8 @@ ALL_TASKS: list[Task] = [
          detail="每卷机缘规划",
          fn=plan_all_fortunes, depends_on=["2A", "1A", "1B"]),
 
-    Task(id="3G", phase="5 · 情节架构", agent_name="主角历程",
-         detail="整体弧+卷里程碑+舞台节拍",
-         fn=plan_protagonist_journey, depends_on=["2A", "2B", "1B"]),
+    # Phase 3G "主角历程" 已删除（2026-05-25）—— overall_theme/milestones 等字段
+    # 全部审计为零下游消费；stage_beats 由 _beats_for_volume 在卷级写作时独立生成。
 
     # 7 · 章节：舞台 + 章节类型
     Task(id="4", phase="7 · 章节", agent_name="叙事舞台",

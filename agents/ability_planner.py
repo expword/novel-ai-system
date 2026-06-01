@@ -15,7 +15,35 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from utils.json_utils import request_json
+from utils.agent_contract import AgentContract, register
 from persistence.state import NovelState
+
+
+# ═══ Agent 形式契约 ═══════════════════════════════════════════════════
+CONTRACT = register(AgentContract(
+    name="ability_planner.plan_chapter_abilities",
+    inputs=[
+        # 主角持有的 asset 清单（含 lifecycle 节点 / external_llm_profile）
+        "power_system.special_abilities",
+        "characters",
+        # 近 N 章使用历史——避免重复
+        "ability_audits",
+        # 主角实力曲线
+        "protagonist_power_log",
+    ],
+    outputs=[
+        # 章级临时产物——挂到 directive.ability_plan（不写 state），
+        # writer 通过 format_ability_plan_brief 读取
+    ],
+    invariants=[
+        # 章级临时产物，章节落盘后规划信息已固化在正文里
+        # 章后由 ability_auditor 独立审计——这里不重复
+    ],
+    notes=(
+        "若 lifecycle 节点命中本章，强制 should_use=True 且 items 必含该 asset。"
+        "节点 [acquired]→只演亮相不展开问答；[locked]→禁占位；其他→正常调用。"
+    ),
+))
 
 
 @dataclass
@@ -27,6 +55,15 @@ class AbilityUseItem:
     drama_value: str = ""           # 这次使用如何强化戏剧性（铺垫/反转/反差）
     restraint_note: str = ""        # 为什么这次该用——不是滥用
     external_llm_profile: str = ""  # 该能力绑定的真 LLM profile id（writer 写时要用占位）
+    lifecycle_node_type: str = ""   # 命中的 lifecycle 节点类型（acquired/first_use/locked/...）
+                                    # 影响 writer 对占位符的使用规则——acquired 只演亮相不展开问答，
+                                    # first_use 才是首次正式调用，locked 期间禁止占位。
+
+
+    usage_rule: str = ""
+    effect_scope: str = ""
+    hard_limits: str = ""
+    cost_rule: str = ""
 
 
 @dataclass
@@ -84,6 +121,10 @@ def _format_protagonist_abilities(state: NovelState) -> tuple[list[dict], str]:
                 "name": ab.name,
                 "description": ab.description,
                 "source": ab.source,
+                "usage_rule": getattr(ab, "usage_rule", "") or "",
+                "effect_scope": getattr(ab, "effect_scope", "") or "",
+                "hard_limits": getattr(ab, "hard_limits", "") or "",
+                "cost_rule": getattr(ab, "cost_rule", "") or "",
                 "stages": stages_brief,
                 "external_llm_profile": ab.external_llm_profile or "",
             })
@@ -92,6 +133,17 @@ def _format_protagonist_abilities(state: NovelState) -> tuple[list[dict], str]:
     parts = []
     for a in abilities:
         line = f"  · 《{a['name']}》（{a['source']}）：{a['description']}\n"
+        contract = []
+        if a.get("usage_rule"):
+            contract.append(f"使用条件：{a['usage_rule']}")
+        if a.get("effect_scope"):
+            contract.append(f"效果范围：{a['effect_scope']}")
+        if a.get("hard_limits"):
+            contract.append(f"硬边界：{a['hard_limits']}")
+        if a.get("cost_rule"):
+            contract.append(f"代价规则：{a['cost_rule']}")
+        if contract:
+            line += "    能力契约：" + "；".join(contract) + "\n"
         if a.get("external_llm_profile"):
             line += (f"    🔌 真 AI 接入：本能力绑了真 LLM（profile={a['external_llm_profile']}），"
                      f"主角问它问题时**用占位 [[ASK_AI:{a['name']}|具体问题]]**——\n"
@@ -115,6 +167,88 @@ def _recent_ability_uses(state: NovelState, current_chapter: int, n: int = 5) ->
             if u.ability_name:
                 used.append(f"第{ch}章·{u.ability_name}（{(u.how_used or '')[:25]}）")
     return used[-10:]
+
+
+def _chapter_num(node) -> int:
+    try:
+        return int(getattr(node, "target_chapter", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _ability_runtime_status(state: NovelState, ability_name: str, chapter_index: int) -> tuple[bool, str]:
+    """Deterministic gate for all assets, independent of LLM taste.
+
+    Returns (can_core_use, reason).  Chapters explicitly assigned to lifecycle
+    nodes are handled elsewhere as forced nodes; this gate blocks spontaneous
+    early/locked/after-sacrifice uses in ordinary chapters.
+    """
+    if not state.power_system:
+        return True, ""
+    ability = next(
+        (ab for ab in (state.power_system.special_abilities or []) if ab.name == ability_name),
+        None,
+    )
+    if not ability:
+        return False, "能力不存在于 power_system.special_abilities"
+    nodes = sorted(
+        [n for n in (getattr(ability, "lifecycle_nodes", None) or []) if _chapter_num(n) > 0],
+        key=_chapter_num,
+    )
+    if not nodes:
+        return True, ""
+
+    first_core = None
+    for n in nodes:
+        nt = (getattr(n, "node_type", "") or "").strip()
+        if nt in {"first_use", "unlocked", "constraint_lifted", "escalation"}:
+            first_core = _chapter_num(n)
+            break
+    if first_core and chapter_index < first_core:
+        return False, f"尚未到核心使用节点（预计第 {first_core} 章）"
+
+    past = [n for n in nodes if _chapter_num(n) <= chapter_index]
+    if past:
+        latest = past[-1]
+        nt = (getattr(latest, "node_type", "") or "").strip()
+        if nt == "locked":
+            return False, "当前 lifecycle 最新状态为 locked"
+        if nt == "sacrificed":
+            return False, "该 asset 已在 lifecycle 中牺牲/失去"
+
+    return True, ""
+
+
+def _enforce_ability_state_machine(
+    state: NovelState,
+    directive,
+    plan: AbilityPlan,
+    forced_nodes: list[dict],
+) -> AbilityPlan:
+    """Remove spontaneous ability uses that violate lifecycle timing."""
+    if not plan.items:
+        return plan
+    chapter_index = int(getattr(directive, "chapter_index", 0) or 0)
+    forced_names = {fn.get("asset_name") for fn in (forced_nodes or []) if fn.get("asset_name")}
+    kept: list[AbilityUseItem] = []
+    removed: list[str] = []
+    for it in plan.items:
+        if it.ability_name in forced_names:
+            kept.append(it)
+            continue
+        ok, reason = _ability_runtime_status(state, it.ability_name, chapter_index)
+        if ok:
+            kept.append(it)
+        else:
+            removed.append(f"{it.ability_name}：{reason}")
+    if removed:
+        plan.review_issues.extend([f"状态机拦截越时序使用：{r}" for r in removed[:5]])
+        plan.reasoning = (plan.reasoning or "") + "；已移除不符合 lifecycle 的能力使用"
+    plan.items = kept
+    if not kept:
+        plan.should_use = False
+        plan.reasoning = plan.reasoning or "能力状态机判定本章无可合法使用能力"
+    return plan
 
 
 def plan_chapter_abilities(state: NovelState, directive) -> AbilityPlan:
@@ -165,17 +299,45 @@ def plan_chapter_abilities(state: NovelState, directive) -> AbilityPlan:
     breakthrough = log.get("recent_breakthrough", "")
 
     # 构造强制节点段（lifecycle 命中本章 → must_use）
+    # 真 AI 占位提示按 node_type 分流：acquired 只演亮相、locked 禁用占位、其他正常调用。
     forced_block = ""
     if forced_nodes:
         lines = ["═══ 【本章必须落地的金手指节点（lifecycle 规划，强制 should_use=true）】═══"]
         for fn in forced_nodes:
-            llm_tag = f"（绑真 AI: {fn['external_llm_profile']} → 必须用 [[ASK_AI:{fn['asset_name']}|具体问题]] 占位）" if fn['external_llm_profile'] else ""
+            nt = (fn.get("node_type", "") or "").strip()
+            asset_n = fn.get("asset_name", "")
+            if fn.get("external_llm_profile"):
+                if nt == "acquired":
+                    llm_tag = (
+                        f"\n      ⚠ 真 AI 接入·[acquired]：本章只演 asset 亮相被发现，"
+                        f"**不展开正式问答**（留给后续 first_use 节点）；"
+                        f"如确需极简自我介绍可用 ≤1 次 [[ASK_AI:{asset_n}|极简问题]] 占位，"
+                        f"且问题不得涉及本书虚构设定。"
+                    )
+                elif nt == "locked":
+                    llm_tag = (
+                        f"\n      ⚠ 真 AI 接入·[locked]：asset 被封禁，"
+                        f"**本章禁止 [[ASK_AI:{asset_n}|...]] 占位**——主角试图调用要写"
+                        f"\"无响应/失败\"的反馈。"
+                    )
+                else:
+                    llm_tag = (
+                        f"\n      🔌 真 AI 接入·[{nt or 'use'}]：本章正式调用，"
+                        f"主角的所有提问必须用 [[ASK_AI:{asset_n}|具体问题]] 占位；"
+                        f"问题只能问现代真实世界知识/原理，不能问本书虚构设定。"
+                    )
+            else:
+                llm_tag = ""
             lines.append(
-                f"  · 《{fn['asset_name']}》（{fn['asset_kind']}）·节点类型 [{fn['node_type']}]\n"
-                f"      作用：{fn['narrative_purpose']}\n"
-                f"      前置：{fn['prerequisites']}{llm_tag}"
+                f"  · 《{asset_n}》（{fn.get('asset_kind', '')}）·节点类型 [{nt}]\n"
+                f"      作用：{fn.get('narrative_purpose', '')}\n"
+                f"      前置：{fn.get('prerequisites', '')}{llm_tag}"
             )
         lines.append("注意：本章必须在 items 里至少包含一个使用该 asset 的条目；should_use 必须 true。")
+        lines.append(
+            "★ 重要：acquired 节点章的 items 描述里**不能**把 asset 当 first_use 写——"
+            "acquired 章只演\"主角发现 / 获得 / 感知\"，问答展开是 first_use 章的事。"
+        )
         forced_block = "\n".join(lines) + "\n"
 
     user_prompt = f"""为第 {directive.chapter_index} 章规划主角的能力使用。
@@ -232,6 +394,18 @@ purpose：{purpose[:80]}
         empty_ok=True,
     )
     if not data:
+        if forced_nodes:
+            plan = _ensure_forced_nodes_in_plan(
+                AbilityPlan(
+                    should_use=True,
+                    reasoning="本章命中能力 lifecycle 节点，LLM 规划失败时按节点兜底执行",
+                ),
+                forced_nodes,
+                abilities_data,
+            )
+            names = "/".join(it.ability_name for it in plan.items[:3])
+            plan.summary = f"用 {names}（lifecycle 兜底）"
+            return plan
         return AbilityPlan(
             should_use=False,
             reasoning="规划 LLM 失败——本章默认不用能力（保守）",
@@ -243,6 +417,7 @@ purpose：{purpose[:80]}
     # 兜底：lifecycle 命中节点必须出现在 items 里（即便 LLM 没写）
     if forced_nodes:
         plan = _ensure_forced_nodes_in_plan(plan, forced_nodes, abilities_data)
+    plan = _enforce_ability_state_machine(state, directive, plan, forced_nodes)
 
     # ── Step B：自审 ──
     review_data = _review_plan(state, directive, plan, abilities_text, recent_uses)
@@ -273,6 +448,7 @@ purpose：{purpose[:80]}
             # 重生分支同样兜底 forced_nodes
             if forced_nodes:
                 new_plan = _ensure_forced_nodes_in_plan(new_plan, forced_nodes, abilities_data)
+            new_plan = _enforce_ability_state_machine(state, directive, new_plan, forced_nodes)
             new_review = _review_plan(state, directive, new_plan, abilities_text, recent_uses)
             new_plan.review_score = int(new_review.get("score", 8))
             new_plan.review_passed = new_plan.review_score >= 7
@@ -290,10 +466,81 @@ purpose：{purpose[:80]}
     return plan
 
 
+# 按 lifecycle node_type 给出"戏剧形态指南"——同一 asset 在不同节点的写法完全不同。
+# 这张表替代原来"所有节点一视同仁"的 cost_note：
+#   · acquired：只演 asset 亮相被发现，**不展开正式问答**（首次正式问答留给 first_use）
+#   · first_use：第一次正式调用——核心功能兑现，戏剧弧线决定后续节奏
+#   · locked：asset 被规则封禁——本章主角想用但用不了（无 [[ASK_AI:...]]）
+#   · unlocked：asset 解封——可正常调用
+#   · escalation：asset 升级 / 获得新功能
+#   · sacrificed：asset 为救主消耗自身
+#
+# 这张表的关键作用：让 writer 在 acquired 节点章里**不要把 first_use 的戏吃掉**——
+# 这是本案的根因之一，第 1 章本该只演"豆包亮相"，结果被写成了"豆包大段问答"。
+_NODE_GUIDANCE: dict[str, dict[str, str]] = {
+    "acquired": {
+        "when": "本章关键场景（lifecycle [acquired] — 主角发现 / 获得 asset 的瞬间）",
+        "cost": "首次出现一般无显式机制代价，但要写主角接触 asset 时的震惊 / 迟疑 / 试探心理反应——\n"
+                "  这是 asset 进入故事的情感锚点，不是机械触发。",
+        "drama": "asset 亮相是本章高光——铺陈足够长，让读者感受到金手指被赋予的份量；"
+                 "切勿草草交代后立刻进入「使用」。",
+        "restraint": "lifecycle [acquired] 锚定本章；**只演获得 / 发现，不展开核心问答**——"
+                     "首次正式调用留给 first_use 节点。",
+    },
+    "first_use": {
+        "when": "本章核心冲突中（lifecycle [first_use] — 主角第一次正式调用 asset 的核心功能）",
+        "cost": "首次使用必须写完整代价——按 asset 描述里的代价规则具体描写"
+                "（消耗 / 反噬 / 疲惫 / 精神负担 等），让读者记住「用一次要付什么」。",
+        "drama": "首次使用是 asset 价值的兑现——主角从此知道这工具能做什么；"
+                 "戏剧弧线决定后续调用节奏，必须演足。",
+        "restraint": "lifecycle [first_use] 锚定本章；必须正式调用一次，体现 asset 核心功能。",
+    },
+    "locked": {
+        "when": "本章关键节点（lifecycle [locked] — asset 被规则封禁 / 暂时失效）",
+        "cost": "asset 失效本身就是代价——主角失去依赖，必须靠人力解决；写出失去工具的失落。",
+        "drama": "金手指被夺走 + 主角靠自己觉醒——经典断奶式戏剧弧。",
+        "restraint": "lifecycle [locked] 锚定本章；**本章不得调用 asset 核心功能**——"
+                     "主角可以试图调用但要写无响应 / 失败的反馈。",
+    },
+    "unlocked": {
+        "when": "本章重要节点（lifecycle [unlocked] — asset 解封 / 恢复可用）",
+        "cost": "解封过程本身一般无额外代价，但要解释为什么这一章能解封——"
+                "前面付出 / 成长 / 触发条件兑现。",
+        "drama": "金手指回归的释放感——主角重获工具，迎来反击。",
+        "restraint": "lifecycle [unlocked] 锚定本章；可正常调用，但要让读者感到来之不易。",
+    },
+    "escalation": {
+        "when": "本章高潮（lifecycle [escalation] — asset 升级 / 获得新功能）",
+        "cost": "升级必有代价——精神 / 寿命 / 物质 / 后续使用更强代价，挑一种具体写出。",
+        "drama": "升级过程要演完整——触发条件 / 痛苦 / 质变 / 确认。",
+        "restraint": "lifecycle [escalation] 锚定本章；调用升级后的功能，体现新能力的厚重。",
+    },
+    "sacrificed": {
+        "when": "本章关键时刻（lifecycle [sacrificed] — asset 为救主消耗自身）",
+        "cost": "asset 牺牲自身——可能永久消失或大幅削弱；主角承受失去的痛。",
+        "drama": "金手指为主角而死——工具情感化的转折，是后期重要的情感支点。",
+        "restraint": "lifecycle [sacrificed] 锚定本章；asset 调用一次作为最后一击或保护主角。",
+    },
+}
+
+
+def _node_guidance(node_type: str) -> dict[str, str]:
+    """取 lifecycle 节点的"戏剧形态指南"；未知节点回退到通用文案。"""
+    return _NODE_GUIDANCE.get(node_type, {
+        "when": f"本章关键场景（lifecycle 节点 [{node_type}]）",
+        "cost": "按节点性质具体描写代价",
+        "drama": f"lifecycle [{node_type}] 锚定章——剧情高光",
+        "restraint": "lifecycle 规划锚定本章必须落地，不可跳过",
+    })
+
+
 def _ensure_forced_nodes_in_plan(plan: AbilityPlan, forced_nodes: list[dict],
                                    allowed_abilities: list[dict]) -> AbilityPlan:
     """lifecycle 命中节点必须出现在 plan.items 里——LLM 若漏，本函数兜底强行加。
     任何命中节点都把 should_use 翻成 True；否则 writer 拿不到能力 prompt。
+
+    **按 node_type 分流写法**：acquired 章只演亮相不展开问答；first_use 章才正式调用；
+    locked 章主角想用但用不了。这是修复"acquired 章被写成 first_use 章"的关键。
     """
     name_to_meta = {a["name"]: a for a in allowed_abilities}
     existing = {it.ability_name for it in plan.items}
@@ -301,18 +548,33 @@ def _ensure_forced_nodes_in_plan(plan: AbilityPlan, forced_nodes: list[dict],
         name = fn.get("asset_name")
         if not name or name not in name_to_meta:
             continue  # 不在主角持有列表（理论上不应该，find_nodes_hitting_chapter 已过滤）
+        node_type = (fn.get("node_type", "") or "").strip()
         if name in existing:
+            # LLM 自己已经把这个 asset 加进 items 了——补 lifecycle_node_type 字段，
+            # 让 writer 的占位符规则按节点类型分级。
+            for it in plan.items:
+                if it.ability_name == name and not it.lifecycle_node_type:
+                    it.lifecycle_node_type = node_type
+                if it.ability_name == name:
+                    it.usage_rule = it.usage_rule or name_to_meta[name].get("usage_rule", "") or ""
+                    it.effect_scope = it.effect_scope or name_to_meta[name].get("effect_scope", "") or ""
+                    it.hard_limits = it.hard_limits or name_to_meta[name].get("hard_limits", "") or ""
+                    it.cost_rule = it.cost_rule or name_to_meta[name].get("cost_rule", "") or ""
             continue
-        node_type = fn.get("node_type", "")
-        cost_note = "按节点性质——acquired/first_use 一般无额外代价；escalation/locked/unlocked/sacrificed 必须有具体代价"
+        g = _node_guidance(node_type)
         plan.items.append(AbilityUseItem(
             ability_name=name,
-            when_to_use=f"本章关键场景（lifecycle 节点 [{node_type}]）",
+            when_to_use=g["when"],
             purpose=(fn.get("narrative_purpose") or "")[:120],
-            cost_to_pay=cost_note,
-            drama_value=f"lifecycle [{node_type}] 锚定章——剧情高光",
-            restraint_note="lifecycle 规划锚定本章必须落地，不可跳过",
+            cost_to_pay=g["cost"],
+            drama_value=g["drama"],
+            restraint_note=g["restraint"],
             external_llm_profile=name_to_meta[name].get("external_llm_profile", "") or "",
+            lifecycle_node_type=node_type,
+            usage_rule=name_to_meta[name].get("usage_rule", "") or "",
+            effect_scope=name_to_meta[name].get("effect_scope", "") or "",
+            hard_limits=name_to_meta[name].get("hard_limits", "") or "",
+            cost_rule=name_to_meta[name].get("cost_rule", "") or "",
         ))
         existing.add(name)
     if plan.items and not plan.should_use:
@@ -339,6 +601,10 @@ def _parse_plan(data: dict, allowed_abilities: list[dict]) -> AbilityPlan:
             drama_value=raw.get("drama_value", "") or "",
             restraint_note=raw.get("restraint_note", "") or "",
             external_llm_profile=name_to_meta[name].get("external_llm_profile", "") or "",
+            usage_rule=name_to_meta[name].get("usage_rule", "") or "",
+            effect_scope=name_to_meta[name].get("effect_scope", "") or "",
+            hard_limits=name_to_meta[name].get("hard_limits", "") or "",
+            cost_rule=name_to_meta[name].get("cost_rule", "") or "",
         ))
     should_use = bool(data.get("should_use"))
     if should_use and not items:
@@ -404,8 +670,11 @@ items（{len(plan.items)} 项）：
     return data or {"score": 8, "issues": []}
 
 
-def format_ability_plan_brief(plan: AbilityPlan, max_chars: int = 500) -> str:
-    """给 writer prompt 用的简报——告诉 writer 本章必须按此使用能力。"""
+def format_ability_plan_brief(plan: AbilityPlan, max_chars: int = 1800) -> str:
+    """给 writer prompt 用的简报——告诉 writer 本章必须按此使用能力。
+
+    占位符提示按 lifecycle_node_type 分级——acquired 章只能极简自我介绍；
+    locked 章禁止占位；其他章正常占位。"""
     if not plan.should_use:
         return (
             "【本章能力使用规划】\n"
@@ -416,26 +685,69 @@ def format_ability_plan_brief(plan: AbilityPlan, max_chars: int = 500) -> str:
         "【本章能力使用规划——必须严格按此执行】",
         f"  · 决策：使用 {len(plan.items)} 处能力（{plan.reasoning[:60]}）",
     ]
-    has_external = False
+    has_external_use = False  # 是否有 item 真的会用占位（acquired/locked 不算）
     for i, it in enumerate(plan.items, 1):
+        nt = (it.lifecycle_node_type or "").strip()
+        node_tag = f" · 节点 [{nt}]" if nt else ""
         line = (
-            f"  {i}. 《{it.ability_name}》在 {it.when_to_use}\n"
-            f"     用途：{it.purpose}\n"
+            f"  {i}. 《{it.ability_name}》在 {it.when_to_use}{node_tag}\n"
+            f"     用途:{it.purpose}\n"
             f"     代价（必须具体描写出来！）：{it.cost_to_pay}\n"
             f"     戏剧性要求：{it.drama_value}"
         )
+        contract_lines = []
+        if it.usage_rule:
+            contract_lines.append(f"使用条件={it.usage_rule}")
+        if it.effect_scope:
+            contract_lines.append(f"效果范围={it.effect_scope}")
+        if it.hard_limits:
+            contract_lines.append(f"硬边界={it.hard_limits}")
+        if it.cost_rule:
+            contract_lines.append(f"代价规则={it.cost_rule}")
+        if contract_lines:
+            line += "\n     能力契约（不得违背）： " + "；".join(contract_lines)
         if it.external_llm_profile:
-            has_external = True
-            line += (
-                f"\n     🔌 真 AI 接入：本能力绑了真 LLM。**主角向《{it.ability_name}》提问的内容**"
-                f"必须用占位写——\n"
-                f"        [[ASK_AI:{it.ability_name}|主角的具体问题文字]]\n"
-                f"     占位之后正常写主角的反应即可——后处理会真把问题发给 LLM，把占位整体替换为真实回答。\n"
-                f"     **绝对不要自己虚构《{it.ability_name}》的回答内容**——回答让真 LLM 给。"
-            )
+            if nt == "acquired":
+                # acquired 章：只演 asset 亮相，不展开问答（首次正式问答留给 first_use）
+                line += (
+                    f"\n     ⚠ 真 AI 接入·[acquired]：本章是《{it.ability_name}》的**获得/发现**节点——\n"
+                    f"        ★ 只演 asset 亮相、被发现、被首次感知的瞬间；**不展开正式问答**\n"
+                    f"        ★ 首次正式调用留给后续 first_use 节点——别把那一章的戏吃掉\n"
+                    f"        ★ 如确需极简自我介绍，**最多用 1 次占位**：\n"
+                    f"           [[ASK_AI:{it.ability_name}|<极简问题，如\"你是什么\"\"你能做什么\">]]\n"
+                    f"        ★ 问题不得涉及本书虚构设定（朝代名/律法/本地行情/虚构人名）——\n"
+                    f"           真 AI 答不出本书设定专有信息（功能边界铁律）\n"
+                    f"     ✗ 反例：「主角问 AI '我在哪'/'怎么回去'/'契约有没有漏洞'」——\n"
+                    f"        这些都是 acquired 章不该问、且 AI 答不出的本书设定专有信息。"
+                )
+                has_external_use = True
+            elif nt == "locked":
+                # locked 章：asset 被封禁，本章禁止占位
+                line += (
+                    f"\n     ⚠ 真 AI 接入·[locked]：《{it.ability_name}》处于**封禁状态**——\n"
+                    f"        ★ **本章不得使用 [[ASK_AI:...]] 占位**（asset 无法响应）\n"
+                    f"        ★ 主角可试图调用但要写\"无响应/失败/沉默\"的反馈，构成困境戏剧性\n"
+                    f"        ★ 这一章的核心是主角失去工具后靠人力/智计/拼搏自救"
+                )
+            else:
+                # first_use / unlocked / escalation / sacrificed / 未标注：正常占位
+                has_external_use = True
+                stage_label = f"[{nt}]" if nt else "[正常调用]"
+                line += (
+                    f"\n     🔌 真 AI 接入·{stage_label}：本能力绑了真 LLM——\n"
+                    f"        ★ 主角向《{it.ability_name}》提的所有问题，必须用占位：\n"
+                    f"           [[ASK_AI:{it.ability_name}|主角的具体问题文字]]\n"
+                    f"        ★ 占位之后正常写主角的反应即可——后处理会真发给 LLM，\n"
+                    f"           把占位整体替换为真实回答\n"
+                    f"        ★ **绝对不要自己虚构《{it.ability_name}》的回答内容**——回答让真 LLM 给\n"
+                    f"        ★ ⚠ 提问内容必须是 AI 训练数据里有的现代真实世界知识/普世原理；\n"
+                    f"           **不能问**本书虚构设定（朝代名/律法/本地行情/虚构人名）——\n"
+                    f"           AI 答不出，会暴露金手指设定崩坏"
+                )
         lines.append(line)
     lines.append("  · 不在本规划里的能力本章一律不得出场；规划里的代价必须具体描写不能跳过。")
-    if has_external:
-        lines.append("  · ⚠ 占位格式严格匹配：双方括号、ASK_AI、能力名、|、问题——**任何字符多了少了都会失败**。")
+    if has_external_use:
+        lines.append("  · ⚠ 占位格式严格匹配：双方括号、ASK_AI、能力名、|、问题——"
+                     "**任何字符多了少了都会失败**。")
     text = "\n".join(lines)
     return text[:max_chars]
