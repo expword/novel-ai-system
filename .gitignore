@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# 生成内容 / 运行产物(不上传)
+output/
+*.db
+*.faiss
+*.npy
+*.meta.json
+*.sqlite
+milvus_novel.db
+_test_milvus.db*
+
+# 本地配置(含 API key,绝不上传)
+user_models.json
+.env
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,19 @@
+# novel_v2 — 可控长文生成系统(LangGraph + RAG 重构 PoC)
+#
+# 核心依赖。demo 默认用 mock LLM / mock embedding，零 API key 即可运行；
+# 只有 numpy 是硬依赖(向量计算)。faiss / langgraph 缺失时会自动降级或给出提示。
+
+numpy>=1.24
+
+# 向量检索后端(可选)。缺失时 VectorStore 自动降级为内置 NumpyVectorStore。
+# 注：numpy 1.x 环境请用 faiss-cpu<=1.8.0；faiss-cpu>=1.9 需 numpy 2.x。
+faiss-cpu==1.8.0
+
+# 工作流编排(运行 graph/ 与 demo.py 的 LangGraph 部分必需)
+langgraph>=0.2.0
+# 跨进程断点续跑的持久化 checkpointer(可选；缺失时降级为内存 MemorySaver)
+langgraph-checkpoint-sqlite>=1.0.0
+
+# —— 以下为可选的「真实后端」，不装也能跑 mock ——
+# openai>=1.0.0                 # 真实 LLM / embedding
+# sentence-transformers>=2.2    # 本地 embedding
