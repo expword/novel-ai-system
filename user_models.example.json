@@ -1,0 +1,18 @@
+{
+  "models": [
+    {
+      "id": "main",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-REPLACE-WITH-YOUR-KEY",
+      "model": "gpt-4o-mini",
+      "usage": ["main", "planner", "extractor", "fallback"]
+    },
+    {
+      "id": "reviewer",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-REPLACE-WITH-YOUR-KEY",
+      "model": "gpt-4o-mini",
+      "usage": ["reviewer"]
+    }
+  ]
+}

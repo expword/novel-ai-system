@@ -3,7 +3,7 @@
     python -m novel_v2.run --title 代码修仙 --chapters 3 --auto-approve \
         --premise "现代程序员穿越修仙世界，用工程思维在宗门崛起"
 
-需要 user_models.json(默认读 f:\\xiaoshuo\\user_models.json)与 langgraph。
+需要 user_models.json(默认读项目根，或用 NOVEL_V2_MODELS 指定路径)与 langgraph。
 """
 from __future__ import annotations
 

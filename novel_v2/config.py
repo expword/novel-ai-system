@@ -1,7 +1,8 @@
 """真实后端装配 —— 从 user_models.json 读取配置，接上真实 LLM 与 embedding。
 
-默认读原项目 f:\\xiaoshuo\\user_models.json(可用环境变量 NOVEL_V2_MODELS 覆盖)。
-该文件结构：{"models": [{id, base_url, api_key, model, usage:[...]}, ...]}
+模型配置默认读项目根的 user_models.json(可用环境变量 NOVEL_V2_MODELS 覆盖)。
+文件结构见 user_models.example.json：
+    {"models": [{id, base_url, api_key, model, usage:[...]}, ...]}
 """
 from __future__ import annotations
 
@@ -15,7 +16,16 @@ from .rag.embeddings import OpenAIEmbedder
 from .rag.indexer import RagMemory
 from .rag.vector_store import make_vector_store
 
-DEFAULT_MODELS_PATH = os.environ.get("NOVEL_V2_MODELS", r"F:\xiaoshuo\user_models.json")
+
+def _default_models_path() -> str:
+    env = os.environ.get("NOVEL_V2_MODELS")
+    if env:
+        return env
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, "user_models.json")
+
+
+DEFAULT_MODELS_PATH = _default_models_path()
 
 
 def load_models(path: Optional[str] = None) -> List[dict]:
@@ -38,7 +48,7 @@ def configure_real(*, models_path: Optional[str] = None,
                    embed_dim: int = 1536,
                    prefer_store: str = "auto",
                    use_llm_rerank: bool = False) -> Tuple[RagMemory, str]:
-    """接真实后端：按用途注册多模型(Multi-Model Routing) + 返回真实 RagMemory。
+    """按用途注册多模型(Multi-Model Routing) + 返回真实 RagMemory。
 
     - 每个 usage(main/reviewer/fallback/…) 注册各自模型，写作走 main、重排走 reviewer
     - use_llm_rerank=True 时用 LLM-as-reranker(reviewer 模型)做精排

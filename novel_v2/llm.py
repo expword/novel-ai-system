@@ -1,7 +1,7 @@
 """LLM 调用适配层 —— 可插拔后端，默认 mock(零 API key 可跑)。
 
-镜像原项目 llm_layer.llm.system_user 的心智模型：对外暴露 system_user()，
-内部走统一后端。这样 graph 的节点不关心用的是 mock 还是真实模型。
+对外暴露统一的 system_user()，内部走可按用途路由的后端。
+这样 graph 的节点不关心用的是 mock 还是真实模型。
 
 切真实模型(OpenAI 兼容)：
     from novel_v2 import llm

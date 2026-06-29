@@ -1,7 +1,6 @@
 """NovelState —— LangGraph 风格的中心化状态(单一 SSoT)。
 
-对比原项目：原 NovelState 是 dataclass，Agent 直接 mutate(引用式)。
-v2 改为 TypedDict + reducer：节点不改 state，只 **返回增量 dict**，由 reducer 合并。
+采用 TypedDict + reducer：节点不 mutate state，只 **返回增量 dict**，由 reducer 合并。
 好处：
   · 并行节点写同一字段不会互相覆盖(reducer 决定如何合并)
   · 每个超步的 state 可被 Checkpointer 整体快照 → 断点续跑
