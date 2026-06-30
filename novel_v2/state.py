@@ -64,6 +64,15 @@ class NovelState(TypedDict, total=False):
     awaiting_human: bool
     human_decision: str         # "approve" | "revise" | ...
 
+    # —— 系统流(可选；空则不启用系统引擎，退化为普通续写) ——
+    system_spec: dict                 # SystemSpec.to_dict()
+    player_state: dict                # PlayerState.to_dict() 面板真相
+    unit_plan: dict                   # {章号str: settle} 单元规划
+    system_violations: list           # 本章引擎违规
+    pending_player_state: dict        # system_node 试算结果，finalize 提交
+    pending_events: list
+    system_events: Annotated[list, operator.add]   # 系统事件日志(累积)
+
 
 def initial_state(
     *,
@@ -75,6 +84,9 @@ def initial_state(
     volume_size: int = 3,
     target_chapters: int = 5,
     debug_inject_flaw: bool = False,
+    system_spec: dict = None,
+    player_state: dict = None,
+    unit_plan: dict = None,
 ) -> NovelState:
     """构造一个最小可运行的初始 state。"""
     return NovelState(
@@ -97,4 +109,11 @@ def initial_state(
         event_log=[],
         awaiting_human=False,
         human_decision="",
+        system_spec=system_spec or {},
+        player_state=player_state or {},
+        unit_plan=unit_plan or {},
+        system_violations=[],
+        pending_player_state={},
+        pending_events=[],
+        system_events=[],
     )

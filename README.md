@@ -20,6 +20,9 @@
 - **Human-in-the-Loop** —— `interrupt()` 在关键节点暂停人审、`Command(resume)` 原节点续跑；Checkpointer 支持断点续跑。
 - **多模型路由** —— 按用途（写作 / 审校 / 兜底）分流，主模型失败自动 fallback。
 - **后端可插拔** —— LLM 与 embedding 均抽象，mock（离线确定性）与 OpenAI 兼容自由切换。
+- **系统流引擎（`system/`）** —— 数值/面板/规则脱离 LLM，「提案-校验-执行」+ 不变量 + 事件溯源，保证升级体系千章不崩、不通胀、可回滚。
+- **叙事真相引擎（`narrative/`）** —— 多层真相栈（反转的反转）、可重释事实（处处是伏笔）、伏笔账本（防凭空 / 防烂尾）、灵魂角色（秘密绑反转层），把「让人在乎、欲罢不能」变成可校验的硬约束。
+- **场景化写作** —— 戏剧蓝图把一章拆成多场景逐场写、放开字数、强制描写，治「平淡 / 不详细 / 不闭环」。
 
 ## 🏗 架构
 
@@ -118,22 +121,27 @@ store = make_vector_store(dim=1536, prefer="milvus",   # Milvus，不可用时�
 
 ```
 novel_v2/
-├── graph/
+├── graph/                场景化写作循环 + 系统/叙事引擎接入
 │   ├── writing_loop.py   StateGraph 组装 + Checkpointer
-│   └── nodes.py          各节点（单一职责）+ 条件路由
-├── rag/
+│   └── nodes.py          各节点 + 场景化写作 + 条件路由
+├── rag/                  多粒度记忆 + 三路混合检索
 │   ├── vector_store.py   VectorStore 抽象 + FAISS / Numpy / Milvus
 │   ├── indexer.py        多粒度索引 + 三路混合检索 + 重排
-│   ├── bm25.py           轻量 BM25
-│   ├── canon_kg.py       设定知识图谱（实体 / 关系 / 伏笔）
-│   ├── rerank.py         Reranker（Keyword / LLM / CrossEncoder）
-│   └── embeddings.py     Embedder（mock / OpenAI）
+│   ├── bm25.py · canon_kg.py · rerank.py · embeddings.py
+├── system/               系统流引擎（数值真相，离 LLM）
+│   ├── spec.py · player_state.py · proposal.py
+│   ├── engine.py         提案-校验-执行
+│   ├── invariants.py · events.py · extractor.py
+├── narrative/            叙事真相引擎（让小说有灵魂）
+│   ├── truth_stack.py    多层真相栈（反转的反转）
+│   ├── facts.py          可重释事实（处处是伏笔）
+│   ├── foreshadow.py     伏笔账本（防凭空 / 防烂尾）
+│   ├── souls.py          灵魂角色（秘密绑反转层）
+│   └── bible.py          统合 + 全量审计
+├── examples/             示例配置（委托系统 spec / 叙事圣经）
 ├── llm.py                LLM 抽象 + 多模型路由
-├── config.py             从 user_models.json 装配真实后端
-├── state.py              NovelState（TypedDict + reducer）
-├── run.py                真实生成入口
-└── demo.py               离线演示
-tests/                    27 个测试
+├── config.py · state.py · run.py · demo.py
+tests/                    55 个测试
 ```
 
 ## 🧪 测试

@@ -16,15 +16,16 @@ from ..state import NovelState
 from . import nodes
 
 
-def build_graph(rag: RagMemory, checkpointer=None, *, stepwise: bool = False):
+def build_graph(rag: RagMemory, checkpointer=None, *, stepwise: bool = False, narrative=None):
     def bind(fn):
         return functools.partial(fn, rag=rag)
 
     g = StateGraph(NovelState)
     g.add_node("retrieve", bind(nodes.retrieve_node))
-    g.add_node("plan", nodes.directive_node)
+    g.add_node("plan", functools.partial(nodes.directive_node, bible=narrative))
     g.add_node("write", bind(nodes.write_node))
-    g.add_node("canon", nodes.canon_node)
+    g.add_node("system", nodes.system_node)
+    g.add_node("canon", functools.partial(nodes.canon_node, bible=narrative))
     g.add_node("critic", nodes.critic_node)
     g.add_node("revise", bind(nodes.revise_node))
     g.add_node("finalize", bind(nodes.finalize_node))
@@ -33,12 +34,13 @@ def build_graph(rag: RagMemory, checkpointer=None, *, stepwise: bool = False):
     g.add_edge(START, "retrieve")
     g.add_edge("retrieve", "plan")
     g.add_edge("plan", "write")
-    g.add_edge("write", "canon")
+    g.add_edge("write", "system")
+    g.add_edge("system", "canon")
     g.add_edge("canon", "critic")
     # 质量门：critical 未清零 → 自愈修订；否则定稿
     g.add_conditional_edges("critic", nodes.route_after_critic,
                             {"revise": "revise", "finalize": "finalize"})
-    g.add_edge("revise", "canon")        # 修订后重审 —— 成环
+    g.add_edge("revise", "system")       # 修订后重新过系统+canon —— 成环
     # 定稿后：结束 / 卷级人审 / 写下一章
     g.add_conditional_edges("finalize", nodes.route_after_finalize,
                             {"END": END, "gate": "gate", "retrieve": "retrieve"})
